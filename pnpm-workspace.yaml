@@ -1,3 +1,2 @@
 allowBuilds:
   esbuild: true
-storeDir: /Users/ka/Library/pnpm/store/v11
