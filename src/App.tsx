@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { estimateHoldingPerformance, groupPerformance } from './domain/performance';
-import type { AppState, Holding, MarketScope, PnlBasis, ProductType } from './domain/types';
-import { analysisAssetClasses, marketScopes, platforms, productTypes } from './domain/types';
+import { estimateHoldingPerformance, groupPerformance, type PerformanceGroupBy } from './domain/performance';
+import type { AppState, Currency, Holding, MarketScope, PnlBasis, ProductType } from './domain/types';
+import { analysisAssetClasses, liquidityProfiles, marketScopes, platforms, productTypes } from './domain/types';
 import { buildAnalysisPrompt } from './services/prompt';
-import { emptyState, exportBackup, importBackup, loadState, saveState } from './services/storage';
+import { emptyState, exportBackup, importBackup, loadRestorePoint, loadState, saveRestorePoint, saveState } from './services/storage';
 import { lookupProductName } from './services/productLookup';
 import { createSupabaseClient, signupEnabled } from './services/supabase';
 import { loadCloudPortfolio, saveCloudPortfolio } from './services/cloudPortfolio';
+import { enableMarketTracking, invokeMarketTracking, loadMarketDashboard, type MarketEstimateRow, type MarketJobRun, type MarketTrackingRow } from './services/marketTracking';
 
 type FormValues = {
   holdingId: string;
@@ -17,6 +18,9 @@ type FormValues = {
   productType: ProductType;
   analysisAssetClass: Holding['analysisAssetClass'];
   marketScope: MarketScope;
+  countryOrRegion: string;
+  industry: string;
+  liquidityProfile: Holding['liquidityProfile'];
   currentAmount: string;
   currency: Holding['currency'];
   pnlValue: string;
@@ -32,18 +36,10 @@ const today = () => {
   const current = new Date();
   return `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-${String(current.getDate()).padStart(2, '0')}`;
 };
-const ageLabel = (date: string) => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return '日期无效';
-  const [year, month, day] = date.split('-').map(Number);
-  const now = new Date();
-  const target = Date.UTC(year, month - 1, day);
-  const todayAtMidnight = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
-  const days = Math.round((todayAtMidnight - target) / 86_400_000);
-  return days < 0 ? `日期在未来 ${Math.abs(days)} 天` : days === 0 ? '今天' : `${days} 天前`;
-};
 const blankForm = (): FormValues => ({
   holdingId: '', platform: '支付宝', productName: '', productCode: '', productType: '场外基金',
   analysisAssetClass: '基金', marketScope: '未知', currentAmount: '', currency: 'CNY',
+  countryOrRegion: '', industry: '', liquidityProfile: '未知',
   pnlValue: '', pnlBasis: '累计金额', amountUpdatedAt: today(), pnlUpdatedAt: today(), manualName: false, nameVerified: false, nameSource: null,
 });
 const currencyLabels: Record<Holding['currency'], string> = { CNY: '人民币 CNY', USD: '美元 USD', HKD: '港币 HKD', OTHER: '其他 / 未知' };
@@ -54,6 +50,9 @@ const money = (value: number | null, currency: Holding['currency']) => value ===
     : new Intl.NumberFormat('zh-CN', { style: 'currency', currency, maximumFractionDigits: 2 }).format(value);
 const hasPortfolioData = (value: AppState) => value.holdings.length > 0 || Object.values(value.profile.answers).some((answer) => Array.isArray(answer) ? answer.length > 0 : Boolean(answer));
 const holdingPreview = (value: AppState) => value.holdings.slice(0, 3).map((holding) => `${holding.productName}${holding.productCode ? `（${holding.productCode}）` : ''} · ${money(holding.currentAmount, holding.currency)}`).join('\n') || '当前没有持仓项目';
+const portfolioAmounts = (holdings: Holding[]) => [...holdings.reduce((totals, holding) => totals.set(holding.currency, (totals.get(holding.currency) ?? 0) + holding.currentAmount), new Map<Holding['currency'], number>())]
+  .map(([currency, amount]) => money(amount, currency)).join(' / ') || '无持仓金额';
+const holdingIdentity = (holding: Holding) => holding.holdingId;
 
 function readInitialState(): { state: AppState; error: string } {
   try {
@@ -78,6 +77,9 @@ export default function App() {
   const [form, setForm] = useState<FormValues | null>(null);
   const [status, setStatus] = useState(initial.error);
   const [storageError, setStorageError] = useState(initial.error);
+  const [restoreAvailable, setRestoreAvailable] = useState(() => {
+    try { return Boolean(localStorage.getItem('personal-invest-os-restore-point-v1')); } catch { return false; }
+  });
   const [prompt, setPrompt] = useState('添加并核对持仓后，可生成一次性诊断请求。');
   const [toast, setToast] = useState('');
   const [querying, setQuerying] = useState(false);
@@ -146,15 +148,125 @@ export default function App() {
     return () => { active = false; };
   }, [cloudClient, session?.user.id]);
 
-  const totalAmount = useMemo(() => state.holdings.reduce((sum, holding) => sum + holding.currentAmount, 0), [state.holdings]);
-  const currencies = useMemo(() => new Set(state.holdings.map((holding) => holding.currency)), [state.holdings]);
-  const overallAmount = currencies.size <= 1 ? money(totalAmount, state.holdings[0]?.currency ?? 'CNY') : '多币种分别统计';
-  const grouped = useMemo(() => groupPerformance(state.holdings, 'productType'), [state.holdings]);
-  const groupedMarket = useMemo(() => groupPerformance(state.holdings, 'marketScope'), [state.holdings]);
-  const chartSeries: Array<{ title: string; groups: typeof grouped }> = [
-    { title: '产品类型', groups: grouped },
-    { title: '国内 / 海外市场', groups: groupedMarket },
-  ];
+  const [groupBy, setGroupBy] = useState<PerformanceGroupBy>('productType');
+  const [expandedGroupKey, setExpandedGroupKey] = useState<string | null>(null);
+  const [marketTracking, setMarketTracking] = useState<MarketTrackingRow[]>([]);
+  const [marketEstimates, setMarketEstimates] = useState<MarketEstimateRow[]>([]);
+  const [marketRuns, setMarketRuns] = useState<MarketJobRun[]>([]);
+  const [marketBusy, setMarketBusy] = useState(false);
+  const [targetCurrency, setTargetCurrency] = useState<Currency>('CNY');
+  const [targetDraft, setTargetDraft] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const stored = state.profile.allocationTargets?.[targetCurrency] ?? {};
+    setTargetDraft(Object.fromEntries(Object.entries(stored).map(([key, value]) => [key, String(value)])));
+  }, [state.profile.allocationTargets, targetCurrency]);
+  const effectiveMarketTracking = useMemo(() => marketTracking.map((tracking) => {
+    const holding = state.holdings.find((item) => item.holdingId === tracking.holding_id);
+    if (!holding || !tracking.enabled) return tracking;
+    const sourcePnl = tracking.source_pnl_value === null ? null : Number(tracking.source_pnl_value);
+    const changed = Number(tracking.source_amount) !== holding.currentAmount
+      || sourcePnl !== holding.pnlValue || tracking.source_pnl_basis !== holding.pnlBasis
+      || tracking.source_amount_updated_at !== holding.amountUpdatedAt || tracking.source_pnl_updated_at !== holding.pnlUpdatedAt;
+    return changed ? { ...tracking, status: 'awaiting-baseline' as const, reason: '检测到金额或盈亏已手工更新；下一次有效行情将重设基准。' } : tracking;
+  }), [marketTracking, state.holdings]);
+  const trackingById = useMemo(() => Object.fromEntries(effectiveMarketTracking.map((item) => [item.holding_id, item])), [effectiveMarketTracking]);
+  const latestEstimateById = useMemo(() => {
+    const map: Record<string, MarketEstimateRow> = {};
+    for (const estimate of marketEstimates) if (!map[estimate.holding_id] || estimate.quote_date > map[estimate.holding_id].quote_date) map[estimate.holding_id] = estimate;
+    return map;
+  }, [marketEstimates]);
+  const performanceHoldings = useMemo(() => state.holdings.map((holding) => {
+    const tracking = trackingById[holding.holdingId];
+    if (tracking?.status !== 'active' || tracking.estimated_amount === null) return holding;
+    const pnlValue = holding.pnlBasis === '累计比例'
+      ? tracking.estimated_return_pct
+      : holding.pnlBasis === '累计金额' ? tracking.estimated_pnl_value : holding.pnlValue;
+    return {
+      ...holding, currentAmount: tracking.estimated_amount,
+      pnlValue: ['累计比例', '累计金额'].includes(holding.pnlBasis) ? pnlValue : holding.pnlValue,
+      amountUpdatedAt: tracking.latest_price_date ?? holding.amountUpdatedAt,
+      pnlUpdatedAt: ['累计比例', '累计金额'].includes(holding.pnlBasis) ? tracking.latest_price_date : holding.pnlUpdatedAt,
+    };
+  }), [state.holdings, trackingById]);
+  const grouped = useMemo(() => groupPerformance(performanceHoldings, groupBy, trackingById), [performanceHoldings, groupBy, trackingById]);
+  const assetAllocationGroups = useMemo(() => groupPerformance(performanceHoldings, 'assetClass'), [performanceHoldings]);
+  const totalAmount = useMemo(() => performanceHoldings.reduce((sum, holding) => sum + holding.currentAmount, 0), [performanceHoldings]);
+  const currencies = useMemo(() => new Set(performanceHoldings.map((holding) => holding.currency)), [performanceHoldings]);
+  const overallAmount = currencies.size <= 1 ? money(totalAmount, performanceHoldings[0]?.currency ?? 'CNY') : '多币种分别统计';
+
+  async function refreshMarketDashboard() {
+    if (!cloudClient || !session || !cloudReady) return;
+    try {
+      const dashboard = await loadMarketDashboard(cloudClient);
+      setMarketTracking(dashboard.tracking);
+      setMarketEstimates(dashboard.estimates);
+      setMarketRuns(dashboard.runs);
+    } catch (error) {
+      setStatus(`读取行情估算记录失败：${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }
+
+  useEffect(() => {
+    if (cloudReady) void refreshMarketDashboard();
+    else {
+      setMarketTracking([]); setMarketEstimates([]); setMarketRuns([]);
+    }
+  }, [cloudReady, session?.user.id]);
+
+  async function checkMarketNow() {
+    if (!cloudClient || !cloudReady) {
+      setStatus('每日行情检查需要先登录并启用 Supabase 云同步。');
+      return;
+    }
+    setMarketBusy(true);
+    setStatus('正在检查已启用的产品行情…');
+    try {
+      const result = await invokeMarketTracking(cloudClient, 'refresh');
+      await refreshMarketDashboard();
+      setStatus(`行情检查完成：检查 ${result.result.checked} 项，更新 ${result.result.updated} 项，过期 ${result.result.stale} 项，不支持 ${result.result.unsupported} 项，失败 ${result.result.failed} 项。${result.result.reasons.slice(0, 2).join('；')}`);
+    } catch (error) {
+      setStatus(`行情检查未完成：${error instanceof Error ? error.message : '请检查 Supabase 函数是否已部署。'}`);
+    } finally { setMarketBusy(false); }
+  }
+
+  async function startMarketTracking(holding: Holding) {
+    if (!cloudClient || !cloudReady) {
+      setStatus('每日行情估算需要先登录并启用 Supabase 云同步。');
+      return;
+    }
+    const currentTracking = trackingById[holding.holdingId];
+    const retrying = Boolean(currentTracking?.enabled && currentTracking.status !== 'active');
+    const resetting = currentTracking?.status === 'active';
+    const confirmation = retrying
+      ? `重试“${holding.productName}”的行情检查并保留当前估算基准？`
+      : resetting
+        ? `以当前手工录入金额 ${money(holding.currentAmount, holding.currency)}（日期 ${holding.amountUpdatedAt}）为“${holding.productName}”重新建立估算基准？`
+        : `将开始跟踪“${holding.productName}”的公开行情，并以当前金额 ${money(holding.currentAmount, holding.currency)} 和金额日期 ${holding.amountUpdatedAt} 建立估算基准。行情和估算记录会保存到你的 Supabase 账号。继续吗？`;
+    if (!window.confirm(confirmation)) return;
+    setMarketBusy(true);
+    try {
+      const result = retrying
+        ? await invokeMarketTracking(cloudClient, 'refresh', holding.holdingId)
+        : await enableMarketTracking(cloudClient, holding.holdingId);
+      await refreshMarketDashboard();
+      const outcome = 'outcomes' in result.result ? result.result.outcomes?.[0] : undefined;
+      setStatus(outcome?.reason ?? (outcome?.status === 'active' ? '已开启每日估算，系统从此日期开始记录，不回填历史持仓。' : '请求已处理；请检查该持仓显示的行情状态。'));
+    } catch (error) {
+      setStatus(`无法启用每日估算：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally { setMarketBusy(false); }
+  }
+
+  async function pauseMarketTracking(holding: Holding) {
+    if (!cloudClient || !cloudReady || !window.confirm(`暂停“${holding.productName}”的每日行情跟踪？已有估算历史会保留。`)) return;
+    setMarketBusy(true);
+    try {
+      await invokeMarketTracking(cloudClient, 'disable', holding.holdingId);
+      await refreshMarketDashboard();
+      setStatus('已暂停该产品的每日跟踪，估算历史保留。');
+    } catch (error) {
+      setStatus(`暂停失败：${error instanceof Error ? error.message : '未知错误'}`);
+    } finally { setMarketBusy(false); }
+  }
 
   function announce(message: string) {
     setToast(message);
@@ -339,6 +451,9 @@ export default function App() {
       productType: holding.productType,
       analysisAssetClass: holding.analysisAssetClass,
       marketScope: holding.marketScope,
+      countryOrRegion: holding.countryOrRegion ?? '',
+      industry: holding.industry ?? '',
+      liquidityProfile: holding.liquidityProfile,
       currentAmount: String(holding.currentAmount),
       currency: holding.currency,
       pnlValue: holding.pnlValue === null ? '' : String(holding.pnlValue),
@@ -375,7 +490,9 @@ export default function App() {
       productType: form.productType,
       analysisAssetClass: form.analysisAssetClass,
       marketScope: form.marketScope,
-      countryOrRegion: existing?.countryOrRegion ?? null,
+      countryOrRegion: form.countryOrRegion.trim() || null,
+      industry: form.industry.trim() || null,
+      liquidityProfile: form.liquidityProfile,
       currency: form.currency,
       currentAmount,
       pnlValue: form.pnlValue.trim() === '' ? null : Number(form.pnlValue),
@@ -384,9 +501,10 @@ export default function App() {
       pnlUpdatedAt: form.pnlValue.trim() === '' ? null : form.pnlUpdatedAt || null,
       productNameSource: form.manualName ? '用户手工录入' : form.nameVerified ? form.nameSource : null,
       productNameVerified: form.manualName ? false : form.nameVerified || existing?.productNameVerified || false,
-      classificationSource: existing?.classificationSource ?? null,
-      classificationAsOf: existing?.classificationAsOf ?? null,
-      classificationConfidence: existing?.classificationConfidence ?? 'unknown',
+      classificationSource: '用户手工分类',
+      classificationAsOf: today(),
+      classificationConfidence: form.analysisAssetClass === '未知' || form.marketScope === '未知' ? 'unknown' : 'medium',
+      classificationUserOverride: true,
       userNotes: existing?.userNotes ?? '',
       manualName: form.manualName,
       createdAt: existing?.createdAt ?? now,
@@ -420,6 +538,7 @@ export default function App() {
   function removeHolding(holding: Holding) {
     if (!window.confirm(`删除“${holding.productName}”？`)) return;
     persist({ ...state, holdings: state.holdings.filter((item) => item.holdingId !== holding.holdingId) });
+    if (cloudClient && cloudReady) void invokeMarketTracking(cloudClient, 'remove', holding.holdingId).then(() => refreshMarketDashboard()).catch((error: unknown) => setStatus(`持仓已从本机删除，但行情历史清理未完成：${error instanceof Error ? error.message : '未知错误'}`));
     announce('持仓已删除');
   }
 
@@ -428,11 +547,23 @@ export default function App() {
     persist(next);
   }
 
+  function saveAllocationTargets() {
+    const entries = Object.entries(targetDraft).filter(([, value]) => value.trim() !== '').map(([key, value]) => [key, Number(value)] as const);
+    if (entries.some(([, value]) => !Number.isFinite(value) || value < 0 || value > 100)) return setStatus('配置目标必须在 0% 到 100% 之间。');
+    const total = entries.reduce((sum, [, value]) => sum + value, 0);
+    if (entries.length > 0 && Math.abs(total - 100) > 0.01) return setStatus(`当前目标合计 ${total.toFixed(2)}%，需要合计 100%。`);
+    const currencyTargets = { ...state.profile.allocationTargets };
+    if (entries.length === 0) delete currencyTargets[targetCurrency];
+    else currencyTargets[targetCurrency] = Object.fromEntries(entries) as AppState['profile']['allocationTargets'][Currency];
+    persist({ ...state, profile: { ...state.profile, allocationTargets: currencyTargets } });
+    setStatus(entries.length ? `已保存 ${targetCurrency} 资产配置目标。` : `已清除 ${targetCurrency} 配置目标。`);
+  }
+
   function downloadBackup() {
     const url = URL.createObjectURL(exportBackup(state));
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'personal-invest-os-backup-v2.json';
+    link.download = 'personal-invest-os-backup-v3.json';
     link.click();
     URL.revokeObjectURL(url);
     announce('备份已导出');
@@ -444,8 +575,14 @@ export default function App() {
       const imported = importBackup(JSON.parse(await file.text()));
       const preview = imported.holdings.slice(0, 5).map((holding) => `${holding.productName} · ${money(holding.currentAmount, holding.currency)}`).join('\n');
       const suffix = imported.holdings.length > 5 ? `\n……以及其余 ${imported.holdings.length - 5} 项` : '';
-      if (!window.confirm(`备份包含 ${imported.holdings.length} 项持仓；导入将替换本机当前数据。\n\n${preview}${suffix}\n\n继续前请确认已导出现有备份。`)) return;
+      const oldIds = new Set(state.holdings.map(holdingIdentity));
+      const newIds = new Set(imported.holdings.map(holdingIdentity));
+      const added = [...newIds].filter((id) => !oldIds.has(id)).length;
+      const removed = [...oldIds].filter((id) => !newIds.has(id)).length;
+      if (!window.confirm(`备份预览：${imported.holdings.length} 项持仓（${portfolioAmounts(imported.holdings)}）。\n当前本机：${state.holdings.length} 项（${portfolioAmounts(state.holdings)}）。\n按平台 + 产品代码/名称比对：新增 ${added} 项、将移除 ${removed} 项。\n\n${preview}${suffix}\n\n导入会替换当前资料，并先在本机保存恢复点。继续吗？`)) return;
       if (cloudReady && session && !window.confirm('云同步当前已开启。导入后也会用这份备份替换云端资料，并同步到当前账号。确定继续吗？')) return;
+      saveRestorePoint(state);
+      setRestoreAvailable(true);
       persist(imported, true);
       announce('备份已导入');
     } catch (error) {
@@ -453,9 +590,20 @@ export default function App() {
     }
   }
 
+  async function restorePreImportData() {
+    try {
+      const restored = loadRestorePoint();
+      if (!restored) return setStatus('没有找到导入前恢复点。');
+      if (!window.confirm(`恢复导入前资料：${restored.holdings.length} 项持仓（${portfolioAmounts(restored.holdings)}）。当前资料将被替换。继续吗？`)) return;
+      if (cloudReady && session && !window.confirm('云同步已启用，恢复后也会覆盖云端资料。确定继续吗？')) return;
+      persist(restored, true);
+      announce('已恢复导入前资料');
+    } catch (error) { setStatus(`恢复失败：${error instanceof Error ? error.message : '未知错误'}`); }
+  }
+
   async function confirmAndCopyPrompt() {
-    if (!window.confirm('此请求含你录入的持仓名称、代码、金额和盈亏。确认复制并发送给你选择的 AI 助手吗？')) return;
-    const text = buildAnalysisPrompt(state);
+    if (!window.confirm('此请求含你录入的持仓名称、代码、金额、盈亏、分类与已保存的行情估算。确认复制并发送给你选择的 AI 助手吗？')) return;
+    const text = buildAnalysisPrompt(state, marketTracking);
     setPrompt(text);
     try {
       await navigator.clipboard.writeText(text);
@@ -474,6 +622,7 @@ export default function App() {
         <div className="toolbar">
           <button className="button" onClick={downloadBackup}>导出备份</button>
           <label className="button file-button">导入备份<input type="file" accept="application/json" onChange={(event) => void readBackup(event.target.files?.[0])} /></label>
+          {restoreAvailable && <button className="button" onClick={() => void restorePreImportData()}>恢复导入前资料</button>}
         </div>
       </header>
 
@@ -496,19 +645,33 @@ export default function App() {
       </section>
 
       <section className="summary-grid">
-        <article className="summary-card"><span>已录入持仓金额</span><strong>{overallAmount}</strong><small>不代表完整总资产</small></article>
+        <article className="summary-card"><span>持仓金额{marketTracking.some((item) => item.status === 'active') ? '（含行情估算）' : ''}</span><strong>{overallAmount}</strong><small>不代表完整总资产；估算值会单独标记</small></article>
         <article className="summary-card"><span>持仓项目</span><strong>{state.holdings.length}</strong><small>仅统计已录入项目</small></article>
         <article className="summary-card"><span>理财体检</span><strong>{questionnaireComplete ? '已完成' : '未完成'}</strong><small>{state.profile.savedAt ? `更新于 ${state.profile.savedAt.slice(0, 10)}` : '可随时修改'}</small></article>
       </section>
 
       <div className="content-grid">
+        <section className="panel market-panel"><div className="panel-heading"><div><h2>交易日行情检查</h2><p>跟踪基于免费公开行情的估算；数据日期和来源逐项展示</p></div><button className="button button-primary" disabled={marketBusy || !cloudReady} onClick={() => void checkMarketNow()}>{marketBusy ? '检查中…' : '立即检查已跟踪产品'}</button></div>
+          <div className="market-summary"><span>已跟踪 {marketTracking.filter((item) => item.enabled).length} 项</span><span>最近载入估算记录 {marketEstimates.length} 条（最多 500 条）</span><span>最近任务：{marketRuns[0] ? `${marketRuns[0].status} · 更新 ${marketRuns[0].updated_count} / 检查 ${marketRuns[0].checked_count} · 开始 ${new Date(marketRuns[0].started_at).toLocaleString('zh-CN')}${marketRuns[0].completed_at ? ` · 完成 ${new Date(marketRuns[0].completed_at).toLocaleString('zh-CN')}` : ' · 运行中'}` : '尚无任务记录'}</span></div>
+          {marketRuns[0]?.summary && <p className="helper-text">最近任务说明：{marketRuns[0].summary}</p>}
+          {!cloudReady && <p className="helper-text">每日自动检查需要登录并启用云同步；本地数据不会自动上传。</p>}
+          {cloudReady && !marketRuns.length && <p className="helper-text">尚无行情任务记录。Supabase 数据库迁移、函数部署和 Cron 配置完成后，系统才会自动运行。</p>}
+          <p className="helper-text">免费公开数据源覆盖有限且可能延迟；未覆盖、过期或代码不匹配时会显示原因。估算历史从启用日开始。</p>
+        </section>
+
         <section className="panel holdings-panel"><div className="panel-heading"><div><h2>当前持仓</h2><p>更新金额与平台盈亏，不维护交易流水</p></div><span className="muted">按录入日期显示</span></div>
           {state.holdings.length === 0 ? <div className="empty-state">还没有持仓。可以先添加一项，也可以导入旧版 JSON 备份。</div> : <div className="holding-list">{[...state.holdings].sort((a, b) => b.amountUpdatedAt.localeCompare(a.amountUpdatedAt)).map((holding) => {
-            const performance = estimateHoldingPerformance(holding);
+            const tracking = trackingById[holding.holdingId];
+            const isEstimated = tracking?.status === 'active' && tracking.estimated_amount !== null;
+            const displayHolding = performanceHoldings.find((item) => item.holdingId === holding.holdingId) ?? holding;
+            const performance = estimateHoldingPerformance(displayHolding);
+            const latestEstimate = latestEstimateById[holding.holdingId];
             return <article className="holding-card" key={holding.holdingId}>
-              <div className="holding-main"><h3>{holding.manualName && <span className="manual-badge">手工</span>}{holding.productName} <span className="type-badge">{holding.productType}</span></h3><p>{holding.platform}{holding.productCode && ` · ${holding.productCode}`} · {holding.marketScope} · 金额更新：${holding.amountUpdatedAt}（${ageLabel(holding.amountUpdatedAt)}） · 盈亏更新：${holding.pnlUpdatedAt ? `${holding.pnlUpdatedAt}（${ageLabel(holding.pnlUpdatedAt)}）` : '未提供'}</p></div>
-              <div className="holding-numbers"><strong>{money(holding.currentAmount, holding.currency)}</strong><span className={performance.returnPct !== null && performance.returnPct < 0 ? 'loss' : 'gain'}>{performance.returnPct === null ? '收益率无法可靠计算' : `估算累计收益率 ${performance.returnPct.toFixed(2)}%`}</span><small>{holding.pnlValue === null ? '盈亏未录入' : `${holding.pnlBasis}：${holding.pnlValue}`}</small></div>
-              <div className="holding-actions"><button onClick={() => editHolding(holding)}>编辑</button><button onClick={() => removeHolding(holding)}>删除</button></div>
+              <div className="holding-main"><h3>{holding.manualName && <span className="manual-badge">手工名称</span>}{holding.productName} <span className="type-badge">{holding.productType}</span>{holding.classificationUserOverride && <span className="manual-badge">分类手工确认</span>}</h3><p>{holding.platform}{holding.productCode && ` · ${holding.productCode}`} · {holding.marketScope}{holding.countryOrRegion ? ` · ${holding.countryOrRegion}` : ''}{holding.industry ? ` · ${holding.industry}` : ''} · 金额日期：{isEstimated ? `行情估算截至 ${tracking!.latest_price_date}` : holding.amountUpdatedAt} · 盈亏日期：{isEstimated && ['累计金额', '累计比例'].includes(holding.pnlBasis) ? tracking!.latest_price_date : holding.pnlUpdatedAt ?? '未提供'}</p>
+                {tracking && <p className="market-detail">行情：{tracking.status === 'active' ? `正常 · ${tracking.latest_price_date} · ${tracking.latest_source}` : `${tracking.status} · ${tracking.reason ?? '待检查'}`} · 最近检查：{tracking.last_checked_at ? new Date(tracking.last_checked_at).toLocaleString('zh-CN') : '尚无'}</p>}
+              </div>
+              <div className="holding-numbers"><strong>{money(isEstimated ? tracking!.estimated_amount : holding.currentAmount, holding.currency)}{isEstimated && <small>行情估算</small>}</strong><span className={performance.returnPct !== null && performance.returnPct < 0 ? 'loss' : 'gain'}>{performance.returnPct === null ? '累计收益率无法可靠计算' : `估算累计收益率 ${performance.returnPct.toFixed(2)}%`}</span>{tracking?.status === 'active' && (performance.returnPct === null || !['累计金额', '累计比例'].includes(holding.pnlBasis)) && <span className={(tracking.estimated_return_pct ?? 0) < 0 ? 'loss' : 'gain'}>启用以来 {tracking.estimated_return_pct?.toFixed(2)}%</span>}<small>{tracking?.status === 'active' ? `启用以来盈亏：${money(tracking.estimated_since_baseline, holding.currency)}` : holding.pnlValue === null ? '盈亏未录入' : `${holding.pnlBasis}：${holding.pnlValue}`}{latestEstimate ? ` · 日涨跌 ${latestEstimate.daily_return_pct === null ? '—' : `${latestEstimate.daily_return_pct.toFixed(2)}%`}` : ''}</small></div>
+              <div className="holding-actions"><button disabled={marketBusy || !cloudReady} onClick={() => void startMarketTracking(holding)}>{tracking?.status === 'active' ? '重新设基准' : tracking?.enabled ? '重试行情' : '开启每日估算'}</button>{tracking?.enabled && <button disabled={marketBusy} onClick={() => void pauseMarketTracking(holding)}>暂停跟踪</button>}<button onClick={() => editHolding(holding)}>编辑</button><button onClick={() => removeHolding(holding)}>删除</button></div>
             </article>;
           })}</div>}
         </section>
@@ -519,6 +682,9 @@ export default function App() {
             <label>产品类型<select disabled={querying} value={form.productType} onChange={(event) => setForm({ ...form, productType: event.target.value as ProductType })}>{productTypes.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>分析资产类别<select value={form.analysisAssetClass} onChange={(event) => setForm({ ...form, analysisAssetClass: event.target.value as Holding['analysisAssetClass'] })}>{analysisAssetClasses.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>市场范围<select value={form.marketScope} onChange={(event) => setForm({ ...form, marketScope: event.target.value as MarketScope })}>{marketScopes.map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label>国家 / 地区<input value={form.countryOrRegion} onChange={(event) => setForm({ ...form, countryOrRegion: event.target.value })} placeholder="如中国、美国、全球混合；无依据可留空" /></label>
+            <label>行业<input value={form.industry} onChange={(event) => setForm({ ...form, industry: event.target.value })} placeholder="如科技、医药；混合或未知可留空" /></label>
+            <label>流动性<select value={form.liquidityProfile} onChange={(event) => setForm({ ...form, liquidityProfile: event.target.value as Holding['liquidityProfile'] })}>{liquidityProfiles.map((item) => <option key={item}>{item}</option>)}</select></label>
             <label className="wide">产品代码<div className="inline-control"><input disabled={querying} value={form.productCode} onChange={(event) => setForm({ ...form, productCode: event.target.value, nameVerified: event.target.value.trim() === form.productCode.trim() ? form.nameVerified : false, nameSource: event.target.value.trim() === form.productCode.trim() ? form.nameSource : null })} placeholder="优先输入基金或证券代码" /><button className="button" type="button" disabled={querying} onClick={() => void lookupName()}>{querying ? '查询中…' : '查名称'}</button></div><small>查名会将代码发送给所选公开查询源；不发送金额或盈亏。</small></label>
             <label>产品名称<input disabled={querying} required value={form.productName} onChange={(event) => setForm({ ...form, productName: event.target.value, manualName: true, nameVerified: false, nameSource: '用户手工录入' })} placeholder="查询结果核对或手工填写" /></label>
             <label>名称状态<div className="inline-control"><span className="field-status">{form.manualName ? '手工' : '待核验 / 查询结果'}</span><button type="button" className="text-button" onClick={() => setForm({ ...form, manualName: true })}>标为手工</button></div></label>
@@ -528,26 +694,35 @@ export default function App() {
             <label>盈亏口径<select value={form.pnlBasis} onChange={(event) => setForm({ ...form, pnlBasis: event.target.value as PnlBasis })}>{(['累计金额', '累计比例', '当日金额', '当日比例', '未知'] as const).map((item) => <option key={item}>{item}</option>)}</select></label>
             <label>金额日期<input type="date" max={today()} value={form.amountUpdatedAt} onChange={(event) => setForm({ ...form, amountUpdatedAt: event.target.value })} /></label>
             <label>盈亏日期<input type="date" max={today()} value={form.pnlUpdatedAt} onChange={(event) => setForm({ ...form, pnlUpdatedAt: event.target.value })} /></label>
-            <p className="form-note wide">当前金额与累计盈亏日期不同或缺失时，不计算估算收益率。反推结果不等于平台真实收益率；部分赎回、分红和费用会造成误差。</p>
+            {form.holdingId && trackingById[form.holdingId]?.status === 'active' && <div className="form-note wide"><span>行情估算截至 {trackingById[form.holdingId].latest_price_date}：{money(trackingById[form.holdingId].estimated_amount, form.currency)}。编辑其他字段时保留上次手工录入金额；若要按最新估算重设基准，请先将下面金额和盈亏更新为估算值。</span><button type="button" className="text-button" onClick={() => { const tracker = trackingById[form.holdingId]; if (!tracker || tracker.estimated_amount === null) return; const pnlValue = form.pnlBasis === '累计比例' ? tracker.estimated_return_pct : form.pnlBasis === '累计金额' ? tracker.estimated_pnl_value : null; setForm({ ...form, currentAmount: String(tracker.estimated_amount), pnlValue: pnlValue === null ? '' : String(pnlValue), amountUpdatedAt: tracker.latest_price_date ?? form.amountUpdatedAt, pnlUpdatedAt: ['累计金额', '累计比例'].includes(form.pnlBasis) ? tracker.latest_price_date ?? form.pnlUpdatedAt : form.pnlUpdatedAt }); }}>填入最新估算值并重设基准</button></div>}
+            <p className="form-note wide">分类为手工确认，来源和日期会随记录保存。当前金额与累计盈亏日期不同或缺失时，不计算估算收益率。反推结果不等于平台真实收益率；部分赎回、分红和费用会造成误差。</p>
             {status && <p className="form-note wide">{status}</p>}
             <div className="form-actions wide"><button type="button" className="button" onClick={() => setForm(null)}>取消</button><button type="submit" className="button button-primary">保存持仓</button></div>
           </form>
         </section>}
 
-        <section className="panel chart-panel"><div className="panel-heading"><div><h2>收益概览</h2><p>按分组成本基数加权估算，显示可计算覆盖数</p></div></div>
-          {grouped.length === 0 ? <div className="empty-state">添加持仓后显示分类收益。</div> : <div className="chart-columns">{chartSeries.map(({ title, groups }) => <div key={title}><h3 className="chart-subtitle">{title}</h3><div className="chart-list">{groups.map((group) => {
+        <section className="panel chart-panel"><div className="panel-heading"><div><h2>多维收益与盈亏</h2><p>累计盈亏与启用行情估算以来变化分开显示；币种不混算</p></div><label className="dimension-select">分组维度<select value={groupBy} onChange={(event) => { setGroupBy(event.target.value as PerformanceGroupBy); setExpandedGroupKey(null); }}><option value="productType">产品类型</option><option value="assetClass">分析资产类别</option><option value="marketScope">国内 / 海外市场</option><option value="countryOrRegion">国家 / 地区</option><option value="industry">行业</option><option value="platform">平台</option><option value="liquidity">流动性</option><option value="currency">币种</option></select></label></div>
+          {grouped.length === 0 ? <div className="empty-state">添加持仓后显示分类收益。</div> : <div className="chart-list">{grouped.map((group) => {
             const returnPct = group.returnPct;
             const magnitude = returnPct === null ? 0 : Math.min(Math.abs(returnPct), 50);
             const left = returnPct === null ? 50 : returnPct < 0 ? 50 - magnitude : 50;
-            return <div className="chart-row" key={group.key}><div className="chart-label"><span>{group.label} · {group.currency}</span><b className={returnPct !== null && returnPct < 0 ? 'loss' : 'gain'}>{returnPct === null ? '无法可靠计算' : `${returnPct.toFixed(2)}%`}</b></div><div className="return-track" role="img" aria-label={returnPct === null ? '收益率无法可靠计算' : `估算收益率 ${returnPct.toFixed(2)}%`}><i className={returnPct !== null && returnPct < 0 ? 'negative-bar' : 'positive-bar'} style={{ left: `${left}%`, width: `${magnitude}%` }} /></div><small>有累计数据 {group.coveredCount} / {group.holdingCount} 项 · 盈亏 {money(group.pnl, group.currency)}</small></div>;
-          })}</div></div>)}</div>}
+            const dataDates = [...new Set(group.holdings.map((holding) => trackingById[holding.holdingId]?.latest_price_date).filter((date): date is string => Boolean(date)))].sort();
+            return <div className="chart-row" key={group.key}><button className="chart-group-toggle" onClick={() => setExpandedGroupKey(expandedGroupKey === group.key ? null : group.key)} aria-expanded={expandedGroupKey === group.key}><div className="chart-label"><span>{group.label} · {group.currency} · {group.holdingCount} 项</span><b className={returnPct !== null && returnPct < 0 ? 'loss' : 'gain'}>{returnPct === null ? '累计收益率未覆盖' : `${returnPct.toFixed(2)}%`}</b></div><div className="return-track" role="img" aria-label={returnPct === null ? '收益率无法可靠计算' : `估算收益率 ${returnPct.toFixed(2)}%`}><i className={returnPct !== null && returnPct < 0 ? 'negative-bar' : 'positive-bar'} style={{ left: `${left}%`, width: `${magnitude}%` }} /></div><small>持仓金额 {money(group.currentAmount, group.currency)} · 同币种占比 {group.amountSharePct === null ? '—' : `${group.amountSharePct.toFixed(1)}%`} · 累计盈亏覆盖 {group.coveredCount}/{group.holdingCount} · {money(group.pnl, group.currency)} · 行情覆盖 {group.marketCoveredCount}/{group.holdingCount} · 行情日期 {dataDates.join('、') || '无'} · 启用以来 {money(group.marketChangeSinceBaseline, group.currency)} ({group.marketReturnSinceBaseline === null ? '—' : `${group.marketReturnSinceBaseline.toFixed(2)}%`})</small></button>
+              {expandedGroupKey === group.key && <div className="group-holdings">{group.holdings.map((holding) => { const tracker = trackingById[holding.holdingId]; const shownAmount = tracker?.status === 'active' && tracker.estimated_amount !== null ? tracker.estimated_amount : holding.currentAmount; return <div key={holding.holdingId}><span>{holding.productName} · {holding.productCode || '无代码'}<small>{tracker ? `行情${tracker.status}${tracker.latest_price_date ? ` · ${tracker.latest_price_date}` : ''}${tracker.reason ? ` · ${tracker.reason}` : ''}` : '未启用行情估算'}</small></span><b>{money(shownAmount, holding.currency)}</b></div>; })}</div>}
+            </div>;
+          })}</div>}
         </section>
 
-        <section className="panel profile-panel"><div className="panel-heading"><div><h2>理财体检</h2><p>目标、期限、现金需求和风险感受</p></div><span className="status-pill">{questionnaireComplete ? '已完成' : '可分次填写'}</span></div><div className="question-list">{requiredQuestions.map(([id, title, options]) => <label key={id}>{title}<select value={String(state.profile.answers[id] ?? '')} onChange={(event) => updateProfile(id, event.target.value)}><option value="">选择或稍后填写</option>{options.map((option) => <option key={option}>{option}</option>)}</select></label>)}</div><p className="helper-text">问卷回答是个人偏好信息，不会自动推导配置比例或交易指令。</p></section>
+        <section className="panel profile-panel"><div className="panel-heading"><div><h2>理财体检</h2><p>目标、期限、现金需求和风险感受</p></div><span className="status-pill">{questionnaireComplete ? '已完成' : '可分次填写'}</span></div><div className="question-list">{requiredQuestions.map(([id, title, options]) => <label key={id}>{title}<select value={String(state.profile.answers[id] ?? '')} onChange={(event) => updateProfile(id, event.target.value)}><option value="">选择或稍后填写</option>{options.map((option) => <option key={option}>{option}</option>)}</select></label>)}</div><p className="helper-text">问卷回答是个人偏好信息，不会自动推导配置比例或交易指令。</p>
+          <div className="allocation-targets"><div className="panel-heading"><div><h3>可选配置目标</h3><p>按币种分别设定；不换算不同币种，也不会自动调仓</p></div><select value={targetCurrency} onChange={(event) => setTargetCurrency(event.target.value as Currency)}><option value="CNY">CNY 人民币</option><option value="USD">USD 美元</option><option value="HKD">HKD 港币</option><option value="OTHER">其他 / 未知</option></select></div>
+            <div className="target-grid">{analysisAssetClasses.filter((item) => item !== '未知').map((assetClass) => { const current = assetAllocationGroups.find((group) => group.label === assetClass && group.currency === targetCurrency); const target = state.profile.allocationTargets?.[targetCurrency]?.[assetClass]; return <label key={assetClass}>{assetClass}<input type="number" min="0" max="100" step="0.1" placeholder="不设目标" value={targetDraft[assetClass] ?? ''} onChange={(event) => setTargetDraft((draft) => ({ ...draft, [assetClass]: event.target.value }))} />{current?.amountSharePct !== null && current?.amountSharePct !== undefined && <small>当前 {current.amountSharePct.toFixed(1)}%{target !== undefined ? ` · 偏离 ${(current.amountSharePct - target).toFixed(1)} 个百分点` : ''}</small>}</label>; })}</div>
+            <div className="target-footer"><span>已填写目标合计：{Object.values(targetDraft).reduce((sum, value) => sum + (value.trim() ? Number(value) || 0 : 0), 0).toFixed(1)}%</span><button className="button" type="button" onClick={saveAllocationTargets}>保存目标</button></div>
+          </div>
+        </section>
 
-        <section className="panel ai-panel"><div className="panel-heading"><div><h2>AI 研究请求</h2><p>暂时保留复制工作流，应用内模型调用需要后端和你确认数据授权</p></div></div><div className="prompt-preview">{prompt}</div><div className="form-actions"><button className="button" onClick={() => setPrompt(buildAnalysisPrompt(state))}>生成预览</button><button className="button button-primary" onClick={() => void confirmAndCopyPrompt()}>确认并复制 Prompt</button></div></section>
+        <section className="panel ai-panel"><div className="panel-heading"><div><h2>AI 研究请求</h2><p>Prompt 纳入分类来源、配置目标和已核验行情；仍由你确认后复制发送</p></div></div><div className="prompt-preview">{prompt}</div><div className="form-actions"><button className="button" onClick={() => setPrompt(buildAnalysisPrompt(state, marketTracking))}>生成预览</button><button className="button button-primary" onClick={() => void confirmAndCopyPrompt()}>确认并复制 Prompt</button></div></section>
       </div>
-      <footer>默认数据保存在当前浏览器；启用账号同步后也会保存到个人云端。请定期导出备份；没有行情自动更新或自动交易。</footer>
+      <footer>默认数据保存在当前浏览器；启用账号同步后也会保存到个人云端。请定期导出备份；不连接账户、不自动交易。每日行情估算需完成 Supabase 后端部署后启用。</footer>
       {toast && <div className="toast" role="status">{toast}</div>}
     </main>
   );

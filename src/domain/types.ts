@@ -13,14 +13,18 @@ export const productTypes = [
 ] as const;
 export type ProductType = (typeof productTypes)[number];
 
-export const analysisAssetClasses = ['债券', '股票/ETF', '基金', '灵活资金', '其他', '未知'] as const;
+export const analysisAssetClasses = ['现金', '固收', '股票/ETF', '商品/黄金', '房地产/REITs', '基金', '混合', '其他', '未知'] as const;
 export type AnalysisAssetClass = (typeof analysisAssetClasses)[number];
+
+export const liquidityProfiles = ['随时可用', '每日可赎回', '有锁定期', '到期/封闭', '未知'] as const;
+export type LiquidityProfile = (typeof liquidityProfiles)[number];
 
 export const marketScopes = ['国内', '海外', '全球/混合', '未知'] as const;
 export type MarketScope = (typeof marketScopes)[number];
 
 export type Currency = 'CNY' | 'USD' | 'HKD' | 'OTHER';
 export type PnlBasis = '累计金额' | '累计比例' | '当日金额' | '当日比例' | '未知';
+export type AllocationTargets = Partial<Record<Currency, Partial<Record<AnalysisAssetClass, number>>>>;
 
 export interface Holding {
   holdingId: string;
@@ -31,6 +35,8 @@ export interface Holding {
   analysisAssetClass: AnalysisAssetClass;
   marketScope: MarketScope;
   countryOrRegion: string | null;
+  industry: string | null;
+  liquidityProfile: LiquidityProfile;
   currency: Currency;
   currentAmount: number;
   pnlValue: number | null;
@@ -42,6 +48,7 @@ export interface Holding {
   classificationSource: string | null;
   classificationAsOf: string | null;
   classificationConfidence: 'high' | 'medium' | 'low' | 'unknown';
+  classificationUserOverride: boolean;
   userNotes: string;
   manualName: boolean;
   createdAt: string;
@@ -51,10 +58,11 @@ export interface Holding {
 export interface InvestorProfile {
   answers: Record<string, string | string[]>;
   savedAt: string | null;
+  allocationTargets: AllocationTargets;
 }
 
 export interface AppState {
-  schemaVersion: 2;
+  schemaVersion: 3;
   holdings: Holding[];
   profile: InvestorProfile;
 }

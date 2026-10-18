@@ -37,6 +37,9 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY': JSON.stringify(anonKey),
       'import.meta.env.NEXT_PUBLIC_SUPABASE_SIGNUP_ENABLED': JSON.stringify(buildEnv.NEXT_PUBLIC_SUPABASE_SIGNUP_ENABLED || 'false'),
     },
+    build: {
+      rollupOptions: { output: { manualChunks: { supabase: ['@supabase/supabase-js'] } } },
+    },
     test: {
       environment: 'node',
       include: ['src/**/*.test.ts'],

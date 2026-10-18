@@ -1,27 +1,35 @@
 import type { AppState, Holding, LegacyBackup, LegacyHolding } from '../domain/types';
 
 export const STORAGE_KEY = 'personal-invest-os-v2';
+export const RESTORE_POINT_KEY = 'personal-invest-os-restore-point-v1';
 
 export function emptyState(): AppState {
-  return { schemaVersion: 2, holdings: [], profile: { answers: {}, savedAt: null } };
+  return { schemaVersion: 3, holdings: [], profile: { answers: {}, savedAt: null, allocationTargets: {} } };
 }
 
 export function loadState(storage: Storage = localStorage): AppState {
   const raw = storage.getItem(STORAGE_KEY);
   if (raw === null) return emptyState();
   const parsed: unknown = JSON.parse(raw);
-  if (!isAppState(parsed)) throw new Error('本机数据格式无法识别；请先导入备份，避免覆盖原数据');
-  return parsed;
+  const migrated = migrateAppState(parsed);
+  if (!migrated) throw new Error('本机数据格式无法识别；请先导入备份，避免覆盖原数据');
+  return migrated;
 }
 
 export function saveState(state: AppState, storage: Storage = localStorage): void {
   storage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function isAppState(value: unknown): value is AppState {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<AppState>;
-  return candidate.schemaVersion === 2 && Array.isArray(candidate.holdings) && !!candidate.profile;
+export function saveRestorePoint(state: AppState, storage: Storage = localStorage): void {
+  storage.setItem(RESTORE_POINT_KEY, JSON.stringify({ ...state, restorePointAt: new Date().toISOString() }));
+}
+
+export function loadRestorePoint(storage: Storage = localStorage): AppState | null {
+  const raw = storage.getItem(RESTORE_POINT_KEY);
+  if (!raw) return null;
+  const migrated = migrateAppState(JSON.parse(raw));
+  if (!migrated) throw new Error('导入前恢复点无法识别；当前资料未变更。');
+  return migrated;
 }
 
 function mapPlatform(value?: string): Holding['platform'] {
@@ -45,9 +53,10 @@ function mapProductType(value?: string): Holding['productType'] {
 
 function mapAssetClass(type: Holding['productType'], original: LegacyHolding): Holding['analysisAssetClass'] {
   if (type === 'A股股票' || type === '场内ETF') return '股票/ETF';
-  if (type === '银行理财' || type === '银行存款' || type === '现金类产品') return '灵活资金';
+  if (type === '银行存款' || type === '现金类产品') return '现金';
+  if (type === '银行理财') return '未知';
   if (type === '场外基金') return '基金';
-  if (original.assetType === '债券') return '债券';
+  if (original.assetType === '债券') return '固收';
   return '未知';
 }
 
@@ -74,6 +83,8 @@ function migrateLegacyHolding(item: LegacyHolding, index: number, now: string): 
     analysisAssetClass: mapAssetClass(productType, item),
     marketScope: item.market === '国内' || item.market === '海外' || item.market === '全球/混合' ? item.market : '未知',
     countryOrRegion: null,
+    industry: null,
+    liquidityProfile: '未知',
     currency: mapCurrency(item.currency),
     currentAmount: item.value,
     pnlValue: pnl,
@@ -85,6 +96,7 @@ function migrateLegacyHolding(item: LegacyHolding, index: number, now: string): 
     classificationSource: null,
     classificationAsOf: null,
     classificationConfidence: item.verifiedType === '已核实' ? 'medium' : 'unknown',
+    classificationUserOverride: false,
     userNotes: '',
     manualName: Boolean(item.manualName),
     createdAt: now,
@@ -94,24 +106,72 @@ function migrateLegacyHolding(item: LegacyHolding, index: number, now: string): 
 
 export function importBackup(input: unknown, now = new Date().toISOString()): AppState {
   if (!input || typeof input !== 'object') throw new Error('备份内容不是有效对象');
-  const backup = input as Partial<AppState> & Partial<LegacyBackup>;
+  const backup = input as Partial<LegacyBackup> & { schemaVersion?: number; holdings?: unknown[]; profile?: AppState['profile'] };
   if (!Array.isArray(backup.holdings)) throw new Error('备份中没有持仓清单');
 
-  const holdings: Holding[] = backup.schemaVersion === 2
-    ? backup.holdings as Holding[]
+  const holdings: Holding[] = backup.schemaVersion === 2 || backup.schemaVersion === 3
+    ? (backup.holdings as Holding[]).map(normalizeHolding)
     : (backup.holdings as LegacyHolding[]).map((item, index) => migrateLegacyHolding(item, index, now));
 
-  if (backup.schemaVersion === 2) {
+  if (backup.schemaVersion === 2 || backup.schemaVersion === 3) {
     for (const [index, holding] of holdings.entries()) {
       if (!holding || typeof holding.holdingId !== 'string' || typeof holding.productName !== 'string' || !Number.isFinite(holding.currentAmount) || typeof holding.amountUpdatedAt !== 'string') {
         throw new Error(`第 ${index + 1} 项数据不完整，未导入`);
       }
     }
   }
-  const profile = backup.schemaVersion === 2
-    ? backup.profile ?? { answers: {}, savedAt: null }
-    : { answers: backup.profile ?? {}, savedAt: backup.profileSavedAt ?? null };
-  return { schemaVersion: 2, holdings, profile: profile as AppState['profile'] };
+  const profile = backup.schemaVersion === 2 || backup.schemaVersion === 3
+    ? normalizeProfile(backup.profile)
+    : { answers: backup.profile ?? {}, savedAt: backup.profileSavedAt ?? null, allocationTargets: {} };
+  return { schemaVersion: 3, holdings, profile: profile as AppState['profile'] };
+}
+
+function normalizeHolding(value: Holding): Holding {
+  return {
+    ...value,
+    countryOrRegion: value.countryOrRegion ?? null,
+    industry: value.industry ?? null,
+    liquidityProfile: value.liquidityProfile ?? '未知',
+    classificationUserOverride: value.classificationUserOverride ?? false,
+  };
+}
+
+function normalizeProfile(value: unknown): AppState['profile'] {
+  if (!value || typeof value !== 'object') return { answers: {}, savedAt: null, allocationTargets: {} };
+  const profile = value as Partial<AppState['profile']>;
+  return {
+    answers: profile.answers && typeof profile.answers === 'object' ? profile.answers : {},
+    savedAt: typeof profile.savedAt === 'string' ? profile.savedAt : null,
+    allocationTargets: profile.allocationTargets && typeof profile.allocationTargets === 'object' ? profile.allocationTargets : {},
+  };
+}
+
+export function migrateAppState(value: unknown): AppState | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as { schemaVersion?: number; holdings?: unknown[]; profile?: AppState['profile'] };
+  if (!Array.isArray(candidate.holdings) || (candidate.schemaVersion !== 2 && candidate.schemaVersion !== 3)) return null;
+  if (candidate.schemaVersion === 3) {
+    try {
+      return {
+        schemaVersion: 3,
+        holdings: candidate.holdings.map((item) => normalizeHolding(item as Holding)),
+        profile: normalizeProfile(candidate.profile),
+      };
+    } catch { return null; }
+  }
+  try {
+    const holdings = candidate.holdings.map((item, index) => {
+      const old = item as Holding;
+      if (typeof old.productName !== 'string' || !Number.isFinite(old.currentAmount)) throw new Error(`第 ${index + 1} 项数据不完整`);
+      const legacyType = old.analysisAssetClass as string;
+      const analysisAssetClass = legacyType === '债券' ? '固收'
+        : legacyType === '灵活资金' ? (old.productType === '银行存款' || old.productType === '现金类产品' ? '现金' : '未知')
+          : ['股票/ETF', '基金', '现金', '固收', '商品/黄金', '房地产/REITs', '混合', '其他', '未知'].includes(legacyType)
+            ? old.analysisAssetClass : '未知';
+      return normalizeHolding({ ...old, analysisAssetClass, industry: null, liquidityProfile: '未知', classificationUserOverride: false });
+    });
+    return { schemaVersion: 3, holdings, profile: normalizeProfile(candidate.profile) };
+  } catch { return null; }
 }
 
 export function exportBackup(state: AppState): Blob {

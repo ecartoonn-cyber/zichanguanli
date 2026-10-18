@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AppState } from '../domain/types';
 import type { CloudPortfolio } from './supabase';
+import { migrateAppState } from './storage';
 
 export async function loadCloudPortfolio(client: SupabaseClient, userId: string): Promise<CloudPortfolio | null> {
   const { data, error } = await client
@@ -10,10 +11,12 @@ export async function loadCloudPortfolio(client: SupabaseClient, userId: string)
     .maybeSingle();
   if (error) throw error;
   if (!data) return null;
-  if (data.schema_version !== 2 || !data.state || data.state.schemaVersion !== 2 || !Array.isArray(data.state.holdings)) {
+  if ((data.schema_version !== 2 && data.schema_version !== 3) || !data.state || !Array.isArray(data.state.holdings)) {
     throw new Error('云端资料版本无法识别；为避免覆盖数据，已停止同步。');
   }
-  return data as unknown as CloudPortfolio;
+  const migrated = migrateAppState(data.state);
+  if (!migrated) throw new Error('云端持仓格式无法迁移；为避免覆盖数据，已停止同步。');
+  return { ...(data as unknown as CloudPortfolio), schema_version: 3, state: migrated };
 }
 
 export async function saveCloudPortfolio(client: SupabaseClient, userId: string, state: AppState, expectedRevision: number | null): Promise<number> {

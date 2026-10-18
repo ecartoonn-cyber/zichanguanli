@@ -19,7 +19,21 @@ export interface GroupPerformance {
   pnl: number | null;
   costBasis: number | null;
   returnPct: number | null;
+  holdings: Holding[];
+  marketCoveredCount: number;
+  marketChangeSinceBaseline: number | null;
+  marketReturnSinceBaseline: number | null;
+  currentAmount: number;
+  amountSharePct: number | null;
 }
+
+export type PerformanceGroupBy = 'productType' | 'assetClass' | 'marketScope' | 'countryOrRegion' | 'industry' | 'liquidity' | 'platform' | 'currency';
+
+export type MarketEstimateForPerformance = {
+  status: string;
+  baseline_amount: number | null;
+  estimated_since_baseline: number | null;
+};
 
 const cumulativeBases: PnlBasis[] = ['累计金额', '累计比例'];
 
@@ -65,7 +79,8 @@ export function estimateHoldingPerformance(holding: Pick<
 
 export function groupPerformance(
   holdings: Holding[],
-  groupBy: 'productType' | 'assetClass' | 'marketScope' | 'platform',
+  groupBy: PerformanceGroupBy,
+  marketTracking: Record<string, MarketEstimateForPerformance> = {},
 ): GroupPerformance[] {
   const groups = new Map<string, GroupPerformance>();
   for (const holding of holdings) {
@@ -75,7 +90,15 @@ export function groupPerformance(
         ? holding.analysisAssetClass
         : groupBy === 'marketScope'
           ? holding.marketScope
-          : holding.platform;
+          : groupBy === 'countryOrRegion'
+            ? holding.countryOrRegion || '未知'
+            : groupBy === 'industry'
+              ? holding.industry || '未知'
+              : groupBy === 'liquidity'
+                ? holding.liquidityProfile
+                : groupBy === 'currency'
+                  ? holding.currency
+                  : holding.platform;
     const key = `${label}::${holding.currency}`;
     const group = groups.get(key) ?? {
       key,
@@ -86,17 +109,32 @@ export function groupPerformance(
       pnl: 0,
       costBasis: 0,
       returnPct: null,
+      holdings: [],
+      marketCoveredCount: 0,
+      marketChangeSinceBaseline: 0,
+      marketReturnSinceBaseline: null,
+      currentAmount: 0,
+      amountSharePct: null,
     };
     group.holdingCount += 1;
+    group.holdings.push(holding);
+    group.currentAmount += holding.currentAmount;
     const estimate = estimateHoldingPerformance(holding);
     if (estimate.status === 'estimated' && estimate.pnl !== null && estimate.costBasis !== null) {
       group.coveredCount += 1;
       group.pnl = (group.pnl ?? 0) + estimate.pnl;
       group.costBasis = (group.costBasis ?? 0) + estimate.costBasis;
     }
+    const marketEstimate = marketTracking[holding.holdingId];
+    if (marketEstimate?.status === 'active' && marketEstimate.baseline_amount && marketEstimate.estimated_since_baseline !== null) {
+      group.marketCoveredCount += 1;
+      group.marketChangeSinceBaseline = (group.marketChangeSinceBaseline ?? 0) + marketEstimate.estimated_since_baseline;
+    }
     groups.set(key, group);
   }
 
+  const currencyTotals = new Map<string, number>();
+  for (const group of groups.values()) currencyTotals.set(group.currency, (currencyTotals.get(group.currency) ?? 0) + group.currentAmount);
   return [...groups.values()].map((group) => ({
     ...group,
     pnl: group.coveredCount > 0 ? group.pnl : null,
@@ -104,5 +142,16 @@ export function groupPerformance(
     returnPct: group.coveredCount > 0 && group.costBasis && group.costBasis > 0
       ? (group.pnl! / group.costBasis) * 100
       : null,
+    marketChangeSinceBaseline: group.marketCoveredCount > 0 ? group.marketChangeSinceBaseline : null,
+    marketReturnSinceBaseline: (() => {
+      if (group.marketCoveredCount === 0) return null;
+      const tracking = group.holdings.map((holding) => marketTracking[holding.holdingId])
+        .filter((item) => item?.status === 'active' && item.baseline_amount && item.estimated_since_baseline !== null);
+      const basis = tracking.reduce((sum, item) => sum + (item.baseline_amount ?? 0), 0);
+      const change = tracking.reduce((sum, item) => sum + (item.estimated_since_baseline ?? 0), 0);
+      return basis > 0 ? change / basis * 100 : null;
+    })(),
+    amountSharePct: (currencyTotals.get(group.currency) ?? 0) > 0
+      ? group.currentAmount / currencyTotals.get(group.currency)! * 100 : null,
   }));
 }

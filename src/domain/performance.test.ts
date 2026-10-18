@@ -4,11 +4,11 @@ import type { Holding } from './types';
 
 const base: Holding = {
   holdingId: 'h1', platform: '支付宝', productName: '基金 A', productCode: '000001',
-  productType: '场外基金', analysisAssetClass: '基金', marketScope: '国内', countryOrRegion: '中国',
+  productType: '场外基金', analysisAssetClass: '基金', marketScope: '国内', countryOrRegion: '中国', industry: null, liquidityProfile: '未知',
   currency: 'CNY', currentAmount: 800, pnlValue: -200, pnlBasis: '累计金额',
   amountUpdatedAt: '2026-10-17', pnlUpdatedAt: '2026-10-17', productNameSource: null,
   productNameVerified: false, classificationSource: null, classificationAsOf: null,
-  classificationConfidence: 'unknown', userNotes: '', manualName: true,
+  classificationConfidence: 'unknown', classificationUserOverride: false, userNotes: '', manualName: true,
   createdAt: '2026-10-17T00:00:00.000Z', updatedAt: '2026-10-17T00:00:00.000Z',
 };
 
@@ -47,6 +47,20 @@ describe('groupPerformance', () => {
     expect(cny.pnl).toBe(-100);
     expect(cny.costBasis).toBe(2000);
     expect(cny.returnPct).toBe(-5);
+    expect(groups).toHaveLength(2);
+  });
+
+  it('groups by the added dimensions, keeps unknown data explicit, and includes since-baseline market estimates', () => {
+    const second = { ...base, holdingId: 'h2', industry: null, liquidityProfile: '有锁定期' as const, currency: 'USD' as const };
+    const groups = groupPerformance([base, second], 'industry', {
+      h1: { status: 'active', baseline_amount: 800, estimated_since_baseline: -40 },
+      h2: { status: 'active', baseline_amount: 100, estimated_since_baseline: 5 },
+    });
+    const cny = groups.find((group) => group.currency === 'CNY')!;
+    expect(cny.label).toBe('未知');
+    expect(cny.marketCoveredCount).toBe(1);
+    expect(cny.marketChangeSinceBaseline).toBe(-40);
+    expect(cny.marketReturnSinceBaseline).toBe(-5);
     expect(groups).toHaveLength(2);
   });
 });

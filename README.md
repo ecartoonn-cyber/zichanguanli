@@ -26,13 +26,15 @@ pnpm dev
 前端托管在 **EdgeOne Makers**（主），后端连接 **官方 Supabase**：
 
 - EdgeOne 项目：`personal-invest-os`（makers-l7akpc0tkpgz）· 已关联 GitHub 仓库 `ecartoonn-cyber/zichanguanli` 的 `main` 分支
-- 最近记录的部署地址：https://personal-invest-os-dpclhix9460m.edgeone.dev （部署后以 EdgeOne 控制台最新记录/绑定域名为准）
+- 最近确认成功的 EdgeOne 部署：`dpargjupipe2`，地址 https://personal-invest-os-dpargjupipe2.edgeone.dev（本地新功能变更尚未部署）
 - 用户确认提交 `5326d4a` 后 EdgeOne Git 构建成功；该次 EdgeOne 部署 ID 未记录
 - 官方 Supabase 后端：项目 `dosomrwbcxvponmawdrh` · URL `https://dosomrwbcxvponmawdrh.supabase.co`（Auth 邮箱密码登录 + Postgres RLS）
 - 部署内容：`pnpm build` 产物 dist（index.html + assets）；构建时仅注入 Supabase URL 与 anon key（公开），service-role key / 数据库密码从不进入构建
 - 火山 IGA Pages 旧版（`personal-invest-os` → q17ilxk1hv）保留可访问，未删除
 
-官方 Supabase 的 `user_portfolios` 数据库迁移需在 Dashboard SQL Editor 手动执行一次（SQL 见 `supabase/migrations/202610180001_user_portfolios.sql`）；执行后登录云同步方在官方后端生效。完整架构见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)，部署触发流程见 [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md)。
+当前代码增加了多维分类、资产配置目标、导入恢复点和交易日行情估算。行情后端采用独立 Supabase 迁移、Edge Function 和 Cron；完成配置前，线上页面不会自动取行情。完整部署步骤见 [`docs/MARKET_DATA_SETUP.md`](docs/MARKET_DATA_SETUP.md)，架构见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+新增的分类/行情数据库迁移、`market-data` Edge Function 与交易日 Cron 配置尚未部署，步骤见 [`docs/MARKET_DATA_SETUP.md`](docs/MARKET_DATA_SETUP.md)。
 
 日常发布流程：本地提交并推送到 GitHub `main`，EdgeOne Git 关联自动构建并部署。部署是否成功、EdgeOne 部署 ID 和访问地址以 EdgeOne 控制台部署记录为准。仓库内 `.github/workflows/deploy-edgeone.yml` 是独立备用通道；GitHub Actions 显示 `success` 不一定代表部署成功，必须确认 Build 和 Deploy 步骤实际运行。详见 [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md)。
 
@@ -44,7 +46,7 @@ pnpm dev
 
 - 未登录或未启用云同步时，持仓和问卷保存在当前浏览器；不同设备的数据彼此独立。云同步只有在目标工作区完成数据库迁移并由用户登录、明确选定资料后才生效。
 - 查询产品名称时会将代码发给第三方公开查询源；金额和盈亏不会随查询发送。
-- 当前没有账户直连、定时任务、行情自动刷新或应用内 AI 调用。
+- 本地代码已包含行情跟踪与定时任务；Supabase 行情迁移、Edge Function 与 Cron 仍需部署，未完成前线上不自动更新。没有账户直连、自动交易或应用内 AI 调用。
 - 可录入单项持仓与导入旧版 JSON 备份。**表格/批量持仓录入本期明确不做。**
 - 收益率仅在累计盈亏与当前金额口径匹配且日期一致时尝试估算；会显示数据覆盖数。部分赎回、分红、费用和平台口径差异会影响估算。
 - 资产分类和产品名称需要用户核对；没有可靠来源时不应把推断当成已验证事实。

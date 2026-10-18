@@ -16,7 +16,7 @@
 | 后端 | 官方 Supabase `dosomrwbcxvponmawdrh` |
 | 最近确认的代码 | `5326d4a Fix EdgeOne pnpm store path`；用户确认该次 EdgeOne Git 构建成功，部署 ID 未记录 |
 
-最近记录的站点地址为 `https://personal-invest-os-dpclhix9460m.edgeone.dev/`。每次部署的 ID 和部署专属地址以 EdgeOne 控制台最新部署记录为准；如有稳定自定义域名，优先使用自定义域名。
+最近确认成功的部署为 `dpargjupipe2`，地址为 `https://personal-invest-os-dpargjupipe2.edgeone.dev/`。本次未提交的本地功能变更不在该线上版本内。每次新部署的 ID 和部署专属地址以 EdgeOne 控制台最新部署记录为准；如有稳定自定义域名，优先使用自定义域名。
 
 ## 日常发布操作
 

@@ -1,0 +1,4 @@
+[functions.market-data]
+# The function validates regular users with Supabase Auth and validates the
+# scheduled caller with a separate secret stored outside the repository.
+verify_jwt = false
