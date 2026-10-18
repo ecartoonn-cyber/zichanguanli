@@ -14,7 +14,7 @@
 | 样式 | 原生 CSS（`src/styles.css`） | 单文件，无 UI 框架 |
 | 测试 | Vitest 3 + jsdom | `npm test`，8 项单测（性能 5 + 存储 3） |
 | 云后端 | `@supabase/supabase-js` 2.118 | Auth + Postgres（RLS）+ 云同步 |
-| 托管 | EdgeOne Makers（主）/ 火山 IGA Pages（保留旧版） | 均部署 `dist` 预构建产物 |
+| 托管 | EdgeOne Makers（主，Git 关联自动构建）/ 火山 IGA Pages（保留旧版） | EdgeOne 从 GitHub `main` 构建 `dist` |
 | 包管理 | pnpm | `pnpm-workspace.yaml` |
 
 ## 3. 代码架构
@@ -80,7 +80,7 @@
 ```
 ┌────────────── 用户浏览器 ──────────────┐
 │  EdgeOne 托管前端（主）                 │
-│  https://personal-invest-os-dp2erx2b4adl.edgeone.dev │
+│  https://personal-invest-os-dpclhix9460m.edgeone.dev │
 │  （火山 IGA Pages 旧版保留：            │
 │    personal-invest-os → q17ilxk1hv）   │
 └──────────────┬─────────────────────────┘
@@ -97,8 +97,8 @@
 
 | 资源 | 标识 | 状态 |
 |---|---|---|
-| EdgeOne 项目 | `personal-invest-os`（makers-l7akpc0tkpgz） | ✅ 部署 `dp2erx2b4adl`，Success |
-| EdgeOne 访问地址 | `https://personal-invest-os-dp2erx2b4adl.edgeone.dev` | ✅ 已验证渲染 + 登录表单 |
+| EdgeOne 项目 | `personal-invest-os`（makers-l7akpc0tkpgz） | ✅ 已关联 GitHub `ecartoonn-cyber/zichanguanli` 的 `main` 分支；最近一次用户确认的 Git 构建提交为 `5326d4a`，EdgeOne deployment ID 未记录 |
+| EdgeOne 访问地址 | 最近记录：`https://personal-invest-os-dpclhix9460m.edgeone.dev` | ✅ 已验证渲染 + 登录表单；后续部署地址以 EdgeOne 控制台为准 |
 | 官方 Supabase | `dosomrwbcxvponmawdrh` | ✅ 连接生效；**迁移待用户手动执行** |
 | 火山工作区 | `personal-invest-os`（glad-apple-e94f93e1） | 保留（旧版前端 + 已迁移数据库） |
 | 火山 Pages | `personal-invest-os`（q17ilxk1hv） | 保留，未删除 |
@@ -117,8 +117,10 @@
 
 ### 4.3 托管平台差异
 
-- **EdgeOne Makers**（主）：线上项目是直接上传类型，不能原地改成原生 Git 集成。`.github/workflows/deploy-edgeone.yml` 通过 GitHub Actions 构建后调用 EdgeOne CLI，继续部署到现有项目；需要在 GitHub Actions 设置 Supabase 公开变量与 EdgeOne API Token。推送到 `main` 后自动部署。
-- **火山 IGA Pages**（保留）：MCP 可全自动部署（upload → deploy → 预览链接，一次性 token）。
+- **EdgeOne Makers**（主）：项目 `personal-invest-os` 已直接关联 GitHub 仓库 `ecartoonn-cyber/zichanguanli` 的 `main` 分支。推送提交会触发 EdgeOne 自己的 Git 构建与部署；应在 EdgeOne 控制台核验部署状态并记录 EdgeOne deployment ID。
+- **GitHub Actions**：`.github/workflows/deploy-edgeone.yml` 是另一条独立备用路径，使用 `EDGEONE_API_TOKEN` 调用 EdgeOne CLI。它需要 Repository variables 中有 Supabase URL 和 anon/Publishable key；否则工作流可以整体显示 `success`，但 Checkout、Build、Deploy 都被跳过。Actions run ID 不能当作 EdgeOne deployment ID。
+- `pnpm-workspace.yaml` 不得指定开发机绝对缓存目录。提交 `5326d4a` 删除 Mac 专属 `storeDir` 后，EdgeOne Git 构建错误 `EACCES mkdir '/Users'` 已解决；用户确认该提交后续构建成功。
+- **火山 IGA Pages**（保留旧版）：MCP 可部署（upload → deploy → 预览链接，一次性 token）。
 
 ## 5. 数据与安全边界
 
@@ -140,7 +142,7 @@
 
 | 项 | 值 |
 |---|---|
-| EdgeOne 项目/部署 | makers-l7akpc0tkpgz / dp2erx2b4adl |
+| EdgeOne 项目/最近记录部署 | makers-l7akpc0tkpgz / dpclhix9460m（后续 Git 部署 ID 待补录） |
 | 官方 Supabase 项目 | dosomrwbcxvponmawdrh |
 | 火山工作区 / Pages | glad-apple-e94f93e1 / q17ilxk1hv |
 | 本地迁移文件 | supabase/migrations/202610180001_user_portfolios.sql |

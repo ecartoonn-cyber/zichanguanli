@@ -1,6 +1,6 @@
 # 实施状态
 
-截至 2026-10-18，本项目在原静态原型基础上建立了本地模块化 MVP，并已部署到火山引擎 Supabase（IGA Pages 静态托管）。用户确认暂不做表格/批量持仓录入；云同步所需的数据表迁移已在目标工作区执行，Auth 登录已随新版本上线，用户数据仍在本机浏览器、未上传云端。
+截至 2026-10-18，本项目已建立本地模块化 MVP，主站托管于 EdgeOne Makers，后端连接官方 Supabase；火山 IGA Pages 旧版保留。GitHub `main` 已与 EdgeOne Git 构建关联，用户确认提交 `5326d4a` 后的 EdgeOne 构建成功，但该次 EdgeOne 部署 ID 尚未记录。用户确认暂不做表格/批量持仓录入；持仓数据仍在本机浏览器、未上传云端。
 
 ## 已完成
 
@@ -77,11 +77,13 @@
   2. 若不知道密码：Authentication → URL Configuration 把 `Site URL` 与 `Redirect URLs` 加入 EdgeOne 域名（https://personal-invest-os-*.edgeone.dev），再到登录页用「忘记密码」重置；
   3. 完成后用真实密码登录，端到端验收云同步（登录后首次提示选择上传本机或恢复云端）。
 
-## 输入框焦点与自动部署说明（2026-10-18）
+## Git 与 EdgeOne 自动部署（2026-10-18）
 
-- 修复持仓表单输入焦点：原先表单状态每次变化都会触发打开表单时的聚焦逻辑，输入一个字符就将焦点重新放到「平台」下拉框；现在只在表单从关闭变为打开时滚动和聚焦。此修复需重新构建并发布后才会出现在 EdgeOne 线上。
-- EdgeOne Makers 支持 Git 仓库集成及生产分支提交自动部署。当前工作区 `.git` 还没有提交记录，也未配置远端仓库；需要用户指定/创建 GitHub、Gitee 或 Coding 仓库并在 EdgeOne 导入关联，之后日常推送到配置分支即可触发构建部署。
-- 推荐构建设置：`pnpm install --frozen-lockfile && pnpm build`，产物目录 `dist`。在 EdgeOne 构建环境配置 `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`（或对应 `VITE_SUPABASE_URL`、`VITE_SUPABASE_ANON_KEY`）和 `NEXT_PUBLIC_SUPABASE_SIGNUP_ENABLED`；只配置公开 anon/publishable key，禁止放入 service role、数据库密码等服务端密钥。
+- GitHub 仓库：`ecartoonn-cyber/zichanguanli`；生产分支：`main`。本地 GitHub CLI（`gh`）已登录并配置为 Git 凭据助手。
+- EdgeOne Makers 项目 `personal-invest-os` 已直接关联该仓库/分支；日常 `git push origin main` 会触发 EdgeOne Git 构建与部署。
+- 表单输入焦点修复包含在 `4946c7e`；随后 EdgeOne 构建失败的根因是 `pnpm-workspace.yaml` 把 storeDir 写死成 Mac 路径 `/Users/ka/Library/pnpm/store/v11`。`5326d4a` 删除了该配置，恢复 pnpm 在构建容器中的默认可写缓存位置；本地 `pnpm build` 通过，用户确认 EdgeOne 对该提交的后续 Git 构建成功。最新 EdgeOne 部署 ID 尚未记录。
+- 仓库 `.github/workflows/deploy-edgeone.yml` 是独立备用部署流程，不等同于 EdgeOne 原生 Git 集成。提交 `5326d4a` 对应的 Actions run 显示 `success`，但其 Checkout、Build、Deploy 步骤均 `skipped`，原因是 GitHub Repository variables 中缺少 Supabase URL 与 Publishable key；不能把工作流 `success` 误报为实际部署成功。
+- 后续发布操作顺序、认证、部署核验和常见错误处理见 [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md)。发布完成后记录 EdgeOne 控制台给出的实际部署 ID；Git commit SHA、GitHub Actions run ID 和 EdgeOne deployment ID 分别记录。
 
 ## 数据迁移
 
