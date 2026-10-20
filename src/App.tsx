@@ -97,12 +97,15 @@ function AssetAllocationDonut({ holdings, trackingById }: { holdings: Holding[];
   );
 }
 
-function DailyContributionRanking({ marketEstimates, trackingById, holdings }: { marketEstimates: MarketEstimateRow[]; trackingById: Record<string, MarketTrackingRow>; holdings: Holding[] }) {
+function DailyContributionRanking({ marketEstimates, holdings }: { marketEstimates: MarketEstimateRow[]; holdings: Holding[] }) {
   if (!marketEstimates.length) return null;
-  const latestDate = marketEstimates[0].as_of_date;
-  const today = marketEstimates.filter((e) => e.as_of_date === latestDate && e.daily_change_amount !== null);
+  const latestDate = marketEstimates[0].quote_date;
+  const today = marketEstimates.filter((e) => e.quote_date === latestDate && e.daily_return_pct !== null && e.estimated_amount !== null);
   if (!today.length) return null;
-  const sorted = [...today].sort((a, b) => (b.daily_change_amount ?? 0) - (a.daily_change_amount ?? 0));
+  const sorted = [...today].map((e) => ({
+    holdingId: e.holding_id,
+    dailyPnl: (e.daily_return_pct ?? 0) * (e.estimated_amount ?? 0) / 100,
+  })).sort((a, b) => b.dailyPnl - a.dailyPnl);
   const topGain = sorted.slice(0, 5);
   const topLose = sorted.slice(-5).reverse();
   const nameOf = (id: string) => holdings.find((h) => h.holdingId === id)?.productName ?? id;
@@ -110,8 +113,8 @@ function DailyContributionRanking({ marketEstimates, trackingById, holdings }: {
     <section className="panel contribution-panel">
       <div className="panel-heading"><div><h2>当日贡献排行（{latestDate}）</h2><p>今日赚最多 / 亏最多各 TOP5</p></div></div>
       <div className="contrib-grid">
-        <div><h3 className="gain">赚最多</h3>{topGain.map((e) => <div key={e.holdingId} className="contrib-row gain"><span>{nameOf(e.holdingId)}</span><b>+{(e.daily_change_amount ?? 0).toFixed(0)} 元</b></div>)}</div>
-        <div><h3 className="loss">亏最多</h3>{topLose.map((e) => <div key={e.holdingId} className="contrib-row loss"><span>{nameOf(e.holdingId)}</span><b>{(e.daily_change_amount ?? 0).toFixed(0)} 元</b></div>)}</div>
+        <div><h3 className="gain">赚最多</h3>{topGain.map((e) => <div key={e.holdingId} className="contrib-row gain"><span>{nameOf(e.holdingId)}</span><b>+{e.dailyPnl.toFixed(0)} 元</b></div>)}</div>
+        <div><h3 className="loss">亏最多</h3>{topLose.map((e) => <div key={e.holdingId} className="contrib-row loss"><span>{nameOf(e.holdingId)}</span><b>{e.dailyPnl.toFixed(0)} 元</b></div>)}</div>
       </div>
     </section>
   );
@@ -840,7 +843,7 @@ export default function App() {
       <AssetAllocationDonut holdings={state.holdings} trackingById={trackingById} />
 
       {dailyPnlByDate.length > 0 && (
-        <DailyContributionRanking marketEstimates={marketEstimates} trackingById={trackingById} holdings={state.holdings} />
+        <DailyContributionRanking marketEstimates={marketEstimates} holdings={state.holdings} />
       )}
 
       <div className="content-grid">
