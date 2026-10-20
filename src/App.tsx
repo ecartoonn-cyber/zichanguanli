@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import type { Session } from '@supabase/supabase-js';
+import type { Session, SupabaseClient } from '@supabase/supabase-js';
 import { estimateHoldingPerformance, groupPerformance, type PerformanceGroupBy } from './domain/performance';
 import type { AppState, Currency, Holding, MarketScope, PnlBasis, ProductType } from './domain/types';
 import { analysisAssetClasses, liquidityProfiles, marketScopes, platforms, productTypes } from './domain/types';
@@ -9,6 +9,7 @@ import { lookupProductName } from './services/productLookup';
 import { createSupabaseClient, signupEnabled } from './services/supabase';
 import { loadCloudPortfolio, saveCloudPortfolio } from './services/cloudPortfolio';
 import { enableMarketTracking, invokeMarketTracking, loadMarketDashboard, type MarketEstimateRow, type MarketJobRun, type MarketTrackingRow } from './services/marketTracking';
+import { loadSectorValuation, type SectorValuationRow } from './services/sectorValuation';
 
 function MonthlyCalendar({ dailyPnlByDate }: { dailyPnlByDate: [string, { pnl: number; amount: number; count: number }][] }) {
   const [open, setOpen] = useState(false);
@@ -119,6 +120,89 @@ function DailyContributionRanking({ marketEstimates, holdings }: { marketEstimat
         <div><h3 className="gain">赚最多</h3>{topGain.map((e) => <div key={e.holdingId} className="contrib-row gain"><span>{nameOf(e.holdingId)}</span><b>+{e.dailyPnl.toFixed(0)} 元</b></div>)}</div>
         <div><h3 className="loss">亏最多</h3>{topLose.map((e) => <div key={e.holdingId} className="contrib-row loss"><span>{nameOf(e.holdingId)}</span><b>{e.dailyPnl.toFixed(0)} 元</b></div>)}</div>
       </div>
+    </section>
+  );
+}
+
+function SectorValuationPanel({ client }: { client: SupabaseClient | null }) {
+  const [rows, setRows] = useState<SectorValuationRow[] | null>(null);
+  const [asOfDate, setAsOfDate] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [sort, setSort] = useState<'opp' | 'risk' | 'name'>('opp');
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setRows(null);
+    setLoadError('');
+    void loadSectorValuation(client).then((result) => {
+      if (!active) return;
+      setRows(result.rows);
+      setAsOfDate(result.asOfDate);
+      setLoadError(result.error ?? '');
+    });
+    return () => { active = false; };
+  }, [client]);
+
+  const sorted = useMemo(() => {
+    if (!rows) return [];
+    const list = [...rows];
+    if (sort === 'opp') list.sort((a, b) => (b.opportunity_score ?? -1) - (a.opportunity_score ?? -1));
+    else if (sort === 'risk') list.sort((a, b) => (b.risk_score ?? -1) - (a.risk_score ?? -1));
+    else list.sort((a, b) => a.sector_name.localeCompare(b.sector_name, 'zh-CN'));
+    return list;
+  }, [rows, sort]);
+
+  const signalClass = (s: string | null) => s === '极度低估' || s === '低估' ? 'sig-low' : s === '高估' || s === '合理偏高' ? 'sig-high' : 'sig-mid';
+  const bar = (score: number | null) => score === null ? 0 : Math.max(0, Math.min(100, score));
+  const pctLabel = (v: number | null, suffix = '%') => v === null ? '—' : `${v.toFixed(1)}${suffix}`;
+  const chgLabel = (v: number | null) => v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`;
+
+  return (
+    <section className="panel sector-panel">
+      <div className="panel-heading">
+        <div><h2>板块估值与抄底 / 风险指数</h2><p>申万一级行业 · 估值历史百分位（乐咕乐股）· 抄底指数越高越值得关注，风险指数越高越需警惕</p></div>
+        <label className="dimension-select">排序<select value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}>
+          <option value="opp">抄底指数 ↓</option><option value="risk">风险指数 ↓</option><option value="name">行业名称</option>
+        </select></label>
+      </div>
+      {asOfDate && <div className="market-summary"><span>数据日期：{asOfDate}</span><span>股债利差分位：{rows?.[0]?.equity_bond_spread_pct !== null && rows?.[0]?.equity_bond_spread_pct !== undefined ? `${rows[0].equity_bond_spread_pct.toFixed(1)}%（沪深300市盈率倒数 − 10年国债）` : '—'}</span><span>启发式打分，非投资建议</span></div>}
+      {!client && <p className="helper-text">未配置 Supabase 连接，无法读取板块估值。</p>}
+      {client && rows === null && !loadError && <p className="helper-text">正在读取板块估值快照…</p>}
+      {loadError && <p className="helper-text">读取失败：{loadError}。请确认已执行 sector_valuation 迁移 SQL。</p>}
+      {client && rows !== null && rows.length === 0 && !loadError && <div className="empty-state">暂无板块估值数据。需要：①在 Supabase Dashboard → SQL Editor 执行 <code>supabase/migrations/202610200001_sector_valuation.sql</code>；②配置 GitHub Actions（变量 NEXT_PUBLIC_SUPABASE_URL + 密钥 SUPABASE_SERVICE_KEY），每日收盘后自动生成快照。</div>}
+      {rows !== null && rows.length > 0 && (
+        <div className="sector-grid">
+          {sorted.map((row) => (
+            <article className="sector-card" key={row.sector_code}>
+              <button className="sector-head" onClick={() => setExpanded(expanded === row.sector_code ? null : row.sector_code)} aria-expanded={expanded === row.sector_code}>
+                <div className="sector-title"><h3>{row.sector_name}</h3><span className={`sector-signal ${signalClass(row.signal)}`}>{row.signal ?? '—'}</span></div>
+                <div className="sector-scores">
+                  <div className="score-block"><span className="score-label">抄底指数</span><span className="score-value opp">{row.opportunity_score === null ? '—' : row.opportunity_score.toFixed(0)}</span><div className="score-track opp"><i style={{ width: `${bar(row.opportunity_score)}%` }} /></div></div>
+                  <div className="score-block"><span className="score-label">风险指数</span><span className="score-value risk">{row.risk_score === null ? '—' : row.risk_score.toFixed(0)}</span><div className="score-track risk"><i style={{ width: `${bar(row.risk_score)}%` }} /></div></div>
+                </div>
+                <div className="sector-metrics">
+                  <span title="PE-TTM 与历史百分位">PE {pctLabel(row.pe_ttm)} · 分位 {pctLabel(row.pe_ttm_pct)}</span>
+                  <span title="市净率与历史百分位">PB {pctLabel(row.pb)} · 分位 {pctLabel(row.pb_pct)}</span>
+                  <span title="股息率与历史百分位">股息 {pctLabel(row.div_yield)} · 分位 {pctLabel(row.div_pct)}</span>
+                  <span title="申万指数涨跌幅">近1月 {chgLabel(row.chg_1m)} · 近3月 {chgLabel(row.chg_3m)}</span>
+                </div>
+              </button>
+              {expanded === row.sector_code && (
+                <div className="sector-detail">
+                  <div className="sector-factors">
+                    <div><span>估值深度（PE/PB 分位，权重 60%）</span><b>{((100 - (row.pe_ttm_pct ?? 50)) * 0.3 + (100 - (row.pb_pct ?? 50)) * 0.3).toFixed(1)}</b></div>
+                    <div><span>市场环境（股债利差分位，权重 20%）</span><b>{row.equity_bond_spread_pct === null ? '—' : (row.equity_bond_spread_pct * 0.2).toFixed(1)}</b></div>
+                    <div><span>超跌（近 3 月跌幅，权重 10%）</span><b>{row.chg_3m === null ? '—' : (Math.max(0, Math.min(100, -row.chg_3m * 4)) * 0.1).toFixed(1)}</b></div>
+                    <div><span>股息保护（权重 10%）</span><b>{row.div_pct === null ? '—' : (row.div_pct * 0.1).toFixed(1)}</b></div>
+                  </div>
+                  <p className="helper-text">口径：PE/PB/股息率历史百分位来自乐咕乐股（含成分调整的序列口径偏差）；涨跌幅基于申万指数日线；指数为启发式打分，不构成投资建议。数据由每日快照任务写入，更新于收盘后。</p>
+                </div>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -930,6 +1014,8 @@ export default function App() {
         </section>
 
         <section className="panel ai-panel"><div className="panel-heading"><div><h2>AI 研究请求</h2><p>Prompt 纳入分类来源、配置目标和已核验行情；仍由你确认后复制发送</p></div></div><div className="prompt-preview">{prompt}</div><div className="form-actions"><button className="button" onClick={() => setPrompt(buildAnalysisPrompt(state, marketTracking))}>生成预览</button><button className="button button-primary" onClick={() => void confirmAndCopyPrompt()}>确认并复制 Prompt</button></div></section>
+
+        <SectorValuationPanel client={cloudClient} />
       </div>
       <footer>默认数据保存在当前浏览器；启用账号同步后也会保存到个人云端。请定期导出备份；不连接账户、不自动交易。每日行情估算需完成 Supabase 后端部署后启用。</footer>
       {toast && <div className="toast" role="status">{toast}</div>}

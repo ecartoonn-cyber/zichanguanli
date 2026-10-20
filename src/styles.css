@@ -55,3 +55,33 @@
 .contrib-row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--line)}
 .contrib-row.gain b{color:#1f6a45}
 .contrib-row.loss b{color:#a54e48}
+
+/* Sector valuation panel (2026-10-20) */
+.sector-panel{grid-column:1/-1}
+.sector-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:10px}
+.sector-card{border:1px solid var(--line);border-radius:12px;background:#fbfcf9;overflow:hidden}
+.sector-head{width:100%;border:0;background:transparent;padding:12px 14px;cursor:pointer;text-align:left;font:inherit;color:inherit;display:block}
+.sector-head:hover{background:#f4f8f3}
+.sector-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.sector-title h3{font-size:14px}
+.sector-signal{font-size:10px;font-weight:600;border-radius:99px;padding:3px 8px;white-space:nowrap}
+.sector-signal.sig-low{background:#d8ecdd;color:#1f6a45}
+.sector-signal.sig-mid{background:#eff3ef;color:#4b5b51}
+.sector-signal.sig-high{background:#fbeae8;color:#a54e48}
+.sector-scores{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px}
+.score-block{display:grid;gap:3px}
+.score-label{font-size:10px;color:var(--muted)}
+.score-value{font-size:17px;font-weight:700}
+.score-value.opp{color:#26734d}
+.score-value.risk{color:var(--red)}
+.score-track{height:7px;background:#edf1ec;border-radius:8px;overflow:hidden}
+.score-track i{display:block;height:100%;border-radius:8px}
+.score-track.opp i{background:linear-gradient(90deg,#7fbf9a,#236a4b)}
+.score-track.risk i{background:linear-gradient(90deg,#d9a06a,#a54e48)}
+.sector-metrics{display:grid;grid-template-columns:1fr 1fr;gap:3px 10px;font-size:11px;color:#415148}
+.sector-metrics span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sector-detail{padding:10px 14px 12px;border-top:1px solid var(--line);background:#f6f9f5}
+.sector-factors{display:grid;gap:4px;font-size:12px;margin-bottom:8px}
+.sector-factors>div{display:flex;justify-content:space-between;gap:12px;color:#415148}
+.sector-factors b{white-space:nowrap}
+@media(max-width:760px){.sector-panel{grid-column:auto}.sector-grid{grid-template-columns:1fr}}

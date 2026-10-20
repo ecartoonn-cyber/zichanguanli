@@ -1,0 +1,52 @@
+name: Daily sector valuation snapshot
+
+on:
+  schedule:
+    # 每日北京时间 23:30（UTC 15:30）收盘后生成申万行业估值快照
+    - cron: '30 15 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check configuration
+        id: config
+        env:
+          SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SERVICE_KEY" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Set NEXT_PUBLIC_SUPABASE_URL (Variables) and SUPABASE_SERVICE_KEY (Secrets) before running. SUPABASE_SERVICE_KEY = Dashboard -> Settings -> API -> service_role key; 仅存于 Actions Secret，绝不进入前端构建。"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.config.outputs.ready == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.config.outputs.ready == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        if: steps.config.outputs.ready == 'true'
+        run: pip install --quiet akshare beautifulsoup4 lxml
+
+      - name: Generate and upsert sector valuation
+        if: steps.config.outputs.ready == 'true'
+        env:
+          SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scripts/sector_valuation.py
+
+      - name: Explain skipped run
+        if: steps.config.outputs.ready != 'true'
+        run: echo "Sector valuation snapshot skipped until repository Variables/Secret are configured."
