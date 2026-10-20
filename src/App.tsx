@@ -10,6 +10,43 @@ import { createSupabaseClient, signupEnabled } from './services/supabase';
 import { loadCloudPortfolio, saveCloudPortfolio } from './services/cloudPortfolio';
 import { enableMarketTracking, invokeMarketTracking, loadMarketDashboard, type MarketEstimateRow, type MarketJobRun, type MarketTrackingRow } from './services/marketTracking';
 
+function MonthlyCalendar({ dailyPnlByDate }: { dailyPnlByDate: [string, { pnl: number; amount: number; count: number }][] }) {
+  // 数据最新日期所在月
+  const latestDate = dailyPnlByDate[0]?.[0] ?? new Date().toISOString().slice(0, 10);
+  const [y, m] = latestDate.split('-').map(Number);
+  const firstDay = new Date(y, m - 1, 1);
+  const startWeekday = firstDay.getDay(); // 0=周日
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const byDate = new Map(dailyPnlByDate);
+  const monthTotal = dailyPnlByDate.filter(([d]) => d.startsWith(`${y}-${String(m).padStart(2, '0')}`)).reduce((s, [, v]) => s + v.pnl, 0);
+  const cells: (string | null)[] = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(`${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+  while (cells.length % 7 !== 0) cells.push(null);
+  return (
+    <section className="panel calendar-panel">
+      <div className="panel-heading">
+        <div><h2>{y}年{m}月 收益日历</h2><p>每个交易日格内显示当日估算总盈亏</p></div>
+        <span className={`calendar-total ${monthTotal < 0 ? 'loss' : 'gain'}`}>本月合计 {monthTotal >= 0 ? '+' : ''}{monthTotal.toFixed(0)} 元</span>
+      </div>
+      <div className="calendar-grid">
+        {['日','一','二','三','四','五','六'].map(d => <span key={d} className="calendar-weekday">{d}</span>)}
+        {cells.map((date, i) => {
+          if (!date) return <span key={i} className="calendar-cell empty" />;
+          const v = byDate.get(date);
+          if (!v) return <span key={i} className="calendar-cell nodata">{Number(date.slice(8))}</span>;
+          return (
+            <span key={i} className={`calendar-cell ${v.pnl < 0 ? 'down' : 'up'}`} title={`${date}：${v.pnl.toFixed(0)} 元`}>
+              <em>{Number(date.slice(8))}</em>
+              <small>{v.pnl >= 0 ? '+' : ''}{v.pnl.toFixed(0)}</small>
+            </span>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 type FormValues = {
   holdingId: string;
   platform: Holding['platform'];
@@ -193,6 +230,33 @@ export default function App() {
   const totalAmount = useMemo(() => performanceHoldings.reduce((sum, holding) => sum + holding.currentAmount, 0), [performanceHoldings]);
   const currencies = useMemo(() => new Set(performanceHoldings.map((holding) => holding.currency)), [performanceHoldings]);
   const overallAmount = currencies.size <= 1 ? money(totalAmount, performanceHoldings[0]?.currency ?? 'CNY') : '多币种分别统计';
+
+  // 按交易日聚合当日总盈亏（从 user_market_estimates）
+  const dailyPnlByDate = useMemo(() => {
+    const map: Record<string, { pnl: number; amount: number; count: number }> = {};
+    for (const e of marketEstimates) {
+      const key = e.quote_date;
+      if (!map[key]) map[key] = { pnl: 0, amount: 0, count: 0 };
+      map[key].pnl += Number(e.estimated_pnl_value ?? 0);
+      map[key].amount += Number(e.estimated_amount ?? 0);
+      map[key].count += 1;
+    }
+    return Object.entries(map).sort(([a], [b]) => b.localeCompare(a));
+  }, [marketEstimates]);
+
+  const todaySummary = dailyPnlByDate[0] ?? null;
+  const yesterdaySummary = dailyPnlByDate[1] ?? null;
+  const last7Pnl = useMemo(() => dailyPnlByDate.slice(0, 7).reduce((s, [, v]) => s + v.pnl, 0), [dailyPnlByDate]);
+  const last30Pnl = useMemo(() => dailyPnlByDate.slice(0, 30).reduce((s, [, v]) => s + v.pnl, 0), [dailyPnlByDate]);
+  const trackingStats = useMemo(() => {
+    const s = { active: 0, unsupported: 0, other: 0 };
+    for (const t of effectiveMarketTracking) {
+      if (t.status === 'active') s.active += 1;
+      else if (t.status === 'unsupported') s.unsupported += 1;
+      else s.other += 1;
+    }
+    return s;
+  }, [effectiveMarketTracking]);
 
   async function refreshMarketDashboard() {
     if (!cloudClient || !session || !cloudReady) return;
@@ -650,6 +714,35 @@ export default function App() {
         <article className="summary-card"><span>理财体检</span><strong>{questionnaireComplete ? '已完成' : '未完成'}</strong><small>{state.profile.savedAt ? `更新于 ${state.profile.savedAt.slice(0, 10)}` : '可随时修改'}</small></article>
       </section>
 
+      {todaySummary && (
+        <section className="daily-summary panel">
+          <div className="daily-summary-head">
+            <div>
+              <span className="daily-label">今日估算收益（{todaySummary[0]}）</span>
+              <strong className={todaySummary[1].pnl < 0 ? 'loss' : 'gain'}>
+                {todaySummary[1].pnl >= 0 ? '+' : ''}{todaySummary[1].pnl.toFixed(0)} 元
+              </strong>
+              <small className="daily-compare">
+                {yesterdaySummary ? <>昨日 {yesterdaySummary[0]}：{yesterdaySummary[1].pnl.toFixed(0)} 元{todaySummary[1].pnl > yesterdaySummary[1].pnl ? '，亏损收窄' : '，亏损扩大'}</> : '昨日数据暂无'}
+              </small>
+            </div>
+            <div className="daily-side">
+              <div><span>近7天</span><strong className={last7Pnl < 0 ? 'loss' : 'gain'}>{last7Pnl >= 0 ? '+' : ''}{last7Pnl.toFixed(0)} 元</strong></div>
+              <div><span>近30天</span><strong className={last30Pnl < 0 ? 'loss' : 'gain'}>{last30Pnl >= 0 ? '+' : ''}{last30Pnl.toFixed(0)} 元</strong></div>
+            </div>
+          </div>
+          <div className="daily-stats">
+            <span>已更新 {trackingStats.active} 项</span>
+            <span>无行情 {trackingStats.unsupported} 项</span>
+            <span>待重试 {trackingStats.other} 项</span>
+          </div>
+        </section>
+      )}
+
+      {dailyPnlByDate.length > 0 && (
+        <MonthlyCalendar dailyPnlByDate={dailyPnlByDate} />
+      )}
+
       <div className="content-grid">
         <section className="panel market-panel"><div className="panel-heading"><div><h2>交易日行情检查</h2><p>跟踪基于免费公开行情的估算；数据日期和来源逐项展示</p></div><button className="button button-primary" disabled={marketBusy || !cloudReady} onClick={() => void checkMarketNow()}>{marketBusy ? '检查中…' : '立即检查已跟踪产品'}</button></div>
           <div className="market-summary"><span>已跟踪 {marketTracking.filter((item) => item.enabled).length} 项</span><span>最近载入估算记录 {marketEstimates.length} 条（最多 500 条）</span><span>最近任务：{marketRuns[0] ? `${marketRuns[0].status} · 更新 ${marketRuns[0].updated_count} / 检查 ${marketRuns[0].checked_count} · 开始 ${new Date(marketRuns[0].started_at).toLocaleString('zh-CN')}${marketRuns[0].completed_at ? ` · 完成 ${new Date(marketRuns[0].completed_at).toLocaleString('zh-CN')}` : ' · 运行中'}` : '尚无任务记录'}</span></div>
@@ -668,7 +761,13 @@ export default function App() {
             const latestEstimate = latestEstimateById[holding.holdingId];
             return <article className="holding-card" key={holding.holdingId}>
               <div className="holding-main"><h3>{holding.manualName && <span className="manual-badge">手工名称</span>}{holding.productName} <span className="type-badge">{holding.productType}</span>{holding.classificationUserOverride && <span className="manual-badge">分类手工确认</span>}</h3><p>{holding.platform}{holding.productCode && ` · ${holding.productCode}`} · {holding.marketScope}{holding.countryOrRegion ? ` · ${holding.countryOrRegion}` : ''}{holding.industry ? ` · ${holding.industry}` : ''} · 金额日期：{isEstimated ? `行情估算截至 ${tracking!.latest_price_date}` : holding.amountUpdatedAt} · 盈亏日期：{isEstimated && ['累计金额', '累计比例'].includes(holding.pnlBasis) ? tracking!.latest_price_date : holding.pnlUpdatedAt ?? '未提供'}</p>
-                {tracking && <p className="market-detail">行情：{tracking.status === 'active' ? `正常 · ${tracking.latest_price_date} · ${tracking.latest_source}` : `${tracking.status} · ${tracking.reason ?? '待检查'}`} · 最近检查：{tracking.last_checked_at ? new Date(tracking.last_checked_at).toLocaleString('zh-CN') : '尚无'}</p>}
+                {tracking && <p className="market-detail">
+                  <span className={`track-badge ${tracking.status === 'active' ? 'badge-active' : tracking.status === 'unsupported' ? 'badge-none' : 'badge-warn'}`}>
+                    {tracking.status === 'active' ? '实测' : tracking.status === 'unsupported' ? '无行情' : tracking.status === 'awaiting-baseline' ? '待重设基准' : tracking.status}
+                  </span>
+                  {tracking.status === 'active' ? ` ${tracking.latest_price_date} · ${tracking.latest_source}` : ` ${tracking.reason ?? '待检查'}`}
+                  {tracking.status === 'active' && tracking.latest_price_date && tracking.latest_price_date < '2026-10-18' && <span className="track-lag">（净值滞后）</span>}
+                </p>}
               </div>
               <div className="holding-numbers"><strong>{money(isEstimated ? tracking!.estimated_amount : holding.currentAmount, holding.currency)}{isEstimated && <small>行情估算</small>}</strong><span className={performance.returnPct !== null && performance.returnPct < 0 ? 'loss' : 'gain'}>{performance.returnPct === null ? '累计收益率无法可靠计算' : `估算累计收益率 ${performance.returnPct.toFixed(2)}%`}</span>{tracking?.status === 'active' && (performance.returnPct === null || !['累计金额', '累计比例'].includes(holding.pnlBasis)) && <span className={(tracking.estimated_return_pct ?? 0) < 0 ? 'loss' : 'gain'}>启用以来 {tracking.estimated_return_pct?.toFixed(2)}%</span>}<small>{tracking?.status === 'active' ? `启用以来盈亏：${money(tracking.estimated_since_baseline, holding.currency)}` : holding.pnlValue === null ? '盈亏未录入' : `${holding.pnlBasis}：${holding.pnlValue}`}{latestEstimate ? ` · 日涨跌 ${latestEstimate.daily_return_pct === null ? '—' : `${latestEstimate.daily_return_pct.toFixed(2)}%`}` : ''}</small></div>
               <div className="holding-actions"><button disabled={marketBusy || !cloudReady} onClick={() => void startMarketTracking(holding)}>{tracking?.status === 'active' ? '重新设基准' : tracking?.enabled ? '重试行情' : '开启每日估算'}</button>{tracking?.enabled && <button disabled={marketBusy} onClick={() => void pauseMarketTracking(holding)}>暂停跟踪</button>}<button onClick={() => editHolding(holding)}>编辑</button><button onClick={() => removeHolding(holding)}>删除</button></div>

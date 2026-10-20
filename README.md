@@ -51,4 +51,4 @@ pnpm dev
 - 收益率仅在累计盈亏与当前金额口径匹配且日期一致时尝试估算；会显示数据覆盖数。部分赎回、分红、费用和平台口径差异会影响估算。
 - 资产分类和产品名称需要用户核对；没有可靠来源时不应把推断当成已验证事实。
 
-详细说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/MVP-使用说明.md`](docs/MVP-使用说明.md)、[`docs/SUPABASE_SYNC.md`](docs/SUPABASE_SYNC.md)、[`docs/项目规格.md`](docs/项目规格.md) 和 [`docs/UPGRADE_AUDIT.md`](docs/UPGRADE_AUDIT.md)。
+详细说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)、[`docs/MVP-使用说明.md`](docs/MVP-使用说明.md)、[`docs/SUPABASE_SYNC.md`](docs/SUPABASE_SYNC.md)、[`docs/项目规格.md`](docs/项目规格.md)、[`docs/UPGRADE_AUDIT.md`](docs/UPGRADE_AUDIT.md) 和 [`docs/投资管理与监控计划.md`](docs/投资管理与监控计划.md)（外部投资目标、归并计划与每日/周/月/季监控节奏）。
