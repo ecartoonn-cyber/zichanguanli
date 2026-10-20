@@ -40,3 +40,18 @@
 .badge-none{background:#eceeed;color:#7a8a80}
 .badge-warn{background:#fff2d8;color:#70581e}
 .track-lag{color:var(--gold);font-size:11px}
+.allocation-panel{margin-bottom:14px}
+.allocation-body{display:flex;gap:20px;align-items:center}
+.allocation-list{flex:1;display:flex;flex-direction:column;gap:8px}
+.allocation-row{display:flex;align-items:center;gap:8px;font-size:13px}
+.allocation-row .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.allocation-row b{margin-left:auto}
+.allocation-row small{color:var(--muted);margin-left:8px;width:60px}
+.contrib-panel{margin-bottom:14px}
+.contrib-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.contrib-grid h3{font-size:13px;margin-bottom:8px}
+.contrib-grid h3.gain{color:#1f6a45}
+.contrib-grid h3.loss{color:#a54e48}
+.contrib-row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid var(--line)}
+.contrib-row.gain b{color:#1f6a45}
+.contrib-row.loss b{color:#a54e48}

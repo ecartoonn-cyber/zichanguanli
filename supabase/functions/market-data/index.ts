@@ -1,5 +1,36 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { calculateHoldingEstimate } from './marketMath.ts';
+
+function calculateHoldingEstimate(input: {
+  baselineAmount: number;
+  baselinePnlValue: number | null;
+  baselinePnlBasis: string;
+  baselinePrice: number;
+  latestPrice: number;
+}) {
+  if (![input.baselineAmount, input.baselinePrice, input.latestPrice].every(Number.isFinite)
+    || input.baselineAmount < 0 || input.baselinePrice <= 0 || input.latestPrice <= 0) {
+    throw new Error('基准金额或行情价格无效');
+  }
+  const estimatedAmount = input.baselineAmount * input.latestPrice / input.baselinePrice;
+  const change = estimatedAmount - input.baselineAmount;
+  let pnl: number | null = null;
+  let returnPct = (input.latestPrice / input.baselinePrice - 1) * 100;
+  const basePnl = input.baselinePnlValue;
+  if (basePnl !== null && input.baselinePnlBasis === '累计金额') {
+    const cost = input.baselineAmount - basePnl;
+    if (cost > 0) {
+      pnl = basePnl + change;
+      returnPct = pnl / cost * 100;
+    }
+  } else if (basePnl !== null && input.baselinePnlBasis === '累计比例' && basePnl > -100) {
+    const cost = input.baselineAmount / (1 + basePnl / 100);
+    if (cost > 0) {
+      pnl = input.baselineAmount - cost + change;
+      returnPct = pnl / cost * 100;
+    }
+  }
+  return { estimatedAmount, change, pnl, returnPct };
+}
 
 type Holding = {
   holdingId: string; productCode: string; productType: string; currentAmount: number;
@@ -62,52 +93,75 @@ function tencentSymbol(code: string, type: string): string | null {
   return null;
 }
 
-async function fetchQuote(holding: Holding): Promise<Quote> {
-  const fetchedAt = new Date().toISOString();
-  if (holding.productType === '场外基金' && /^\d{6}$/.test(holding.productCode)) {
-    const query = new URLSearchParams({ fundCode: holding.productCode, pageIndex: '1', pageSize: '5', startDate: '', endDate: '' });
-    const response = await fetch(`https://api.fund.eastmoney.com/f10/lsjz?${query}`, {
-      headers: { 'User-Agent': 'PersonalInvestOS/1.0', Referer: `https://fundf10.eastmoney.com/jjjz_${holding.productCode}.html` },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!response.ok) throw new Error(`基金净值源返回 HTTP ${response.status}`);
-    const payload = await response.json();
-    const rows = payload?.Data?.LSJZList ?? [];
-    const row = rows.find((item: Record<string, string>) => /^\d{4}-\d{2}-\d{2}$/.test(item.FSRQ ?? '') && parseNumber(item.DWJZ) !== null);
-    if (!row) throw new Error('公开净值源没有返回可核验的单位净值');
-    if (row.FSRQ > chinaDate()) throw new Error('公开净值源返回未来日期，已拒绝使用');
-    return {
-      code: holding.productCode, type: holding.productType, price: Number(row.DWJZ),
-      dailyReturnPct: parseNumber(row.JZZZL), currency: 'CNY', source: '东方财富基金历史净值（公开网页接口，非正式 API）',
-      asOfDate: row.FSRQ, fetchedAt,
-    };
-  }
+async function fetchEastMoneyFund(holding: Holding, fetchedAt: string): Promise<Quote> {
+  const query = new URLSearchParams({ fundCode: holding.productCode, pageIndex: '1', pageSize: '5', startDate: '', endDate: '' });
+  const response = await fetch(`https://api.fund.eastmoney.com/f10/lsjz?${query}`, {
+    headers: { 'User-Agent': 'PersonalInvestOS/1.0', Referer: `https://fundf10.eastmoney.com/jjjz_${holding.productCode}.html` },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) throw new Error(`基金净值源返回 HTTP ${response.status}`);
+  const payload = await response.json();
+  const rows = payload?.Data?.LSJZList ?? [];
+  const row = rows.find((item: Record<string, string>) => /^\d{4}-\d{2}-\d{2}$/.test(item.FSRQ ?? '') && parseNumber(item.DWJZ) !== null);
+  if (!row) throw new Error('公开净值源没有返回可核验的单位净值');
+  if (row.FSRQ > chinaDate()) throw new Error('公开净值源返回未来日期，已拒绝使用');
+  return {
+    code: holding.productCode, type: holding.productType, price: Number(row.DWJZ),
+    dailyReturnPct: parseNumber(row.JZZZL), currency: 'CNY', source: '东方财富基金历史净值（公开网页接口，非正式 API）',
+    asOfDate: row.FSRQ, fetchedAt,
+  };
+}
 
+async function fetchTencentQuote(holding: Holding, fetchedAt: string): Promise<Quote> {
   const code = holding.productCode.trim().toUpperCase();
-  if (/^\d{6}\.(SH|SZ|BJ)$/.test(code) && !tencentSymbol(code, holding.productType)) {
+  if (/^\d{6}\.(SH|SZ|BJ)$/.test(code) && !tencentSymbol(holding.productCode, holding.productType)) {
     throw new Error('输入代码的交易所后缀与代码规则不匹配或当前市场不支持');
   }
   const symbol = tencentSymbol(holding.productCode, holding.productType);
-  if (symbol) {
-    const expectedCode = holding.productCode.trim().toUpperCase().replace(/\.(SH|SZ|BJ)$/, '');
-    const response = await fetch(`https://qt.gtimg.cn/q=${symbol}`, { signal: AbortSignal.timeout(10000) });
-    if (!response.ok) throw new Error(`证券行情源返回 HTTP ${response.status}`);
-    const raw = await response.text();
-    const value = raw.match(/="([^"]+)"/)?.[1];
-    if (!value) throw new Error('公开行情源未返回证券数据');
-    const fields = value.split('~');
-    const price = parseNumber(fields[3]);
-    const previousClose = parseNumber(fields[4]);
-    const timestamp = fields.find((field) => /^\d{14}$/.test(field));
-    if (!price || !timestamp || fields[2] !== expectedCode) throw new Error('行情源代码或价格字段与输入不匹配');
-    const asOfDate = `${timestamp.slice(0, 4)}-${timestamp.slice(4, 6)}-${timestamp.slice(6, 8)}`;
-    if (asOfDate > chinaDate()) throw new Error('公开行情源返回未来日期，已拒绝使用');
-    return {
-      code: holding.productCode, type: holding.productType, price,
-      dailyReturnPct: previousClose ? ((price / previousClose) - 1) * 100 : null,
-      currency: 'CNY', source: '腾讯证券公开行情接口（非正式 API）', asOfDate, fetchedAt,
-    };
+  if (!symbol) throw new Error('腾讯行情无法识别该代码的交易所');
+  const expectedCode = holding.productCode.trim().toUpperCase().replace(/\.(SH|SZ|BJ)$/, '');
+  const response = await fetch(`https://qt.gtimg.cn/q=${symbol}`, { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error(`证券行情源返回 HTTP ${response.status}`);
+  const raw = await response.text();
+  const value = raw.match(/="([^"]+)"/)?.[1];
+  if (!value) throw new Error('公开行情源未返回证券数据');
+  const fields = value.split('~');
+  const price = parseNumber(fields[3]);
+  const previousClose = parseNumber(fields[4]);
+  const timestamp = fields.find((field) => /^\d{14}$/.test(field));
+  if (!price || !timestamp || fields[2] !== expectedCode) throw new Error('行情源代码或价格字段与输入不匹配');
+  const asOfDate = `${timestamp.slice(0, 4)}-${timestamp.slice(4, 6)}-${timestamp.slice(6, 8)}`;
+  if (asOfDate > chinaDate()) throw new Error('公开行情源返回未来日期，已拒绝使用');
+  return {
+    code: holding.productCode, type: holding.productType, price,
+    dailyReturnPct: previousClose ? ((price / previousClose) - 1) * 100 : null,
+    currency: 'CNY', source: '腾讯证券公开行情接口（非正式 API）', asOfDate, fetchedAt,
+  };
+}
+
+async function fetchQuote(holding: Holding): Promise<Quote> {
+  const fetchedAt = new Date().toISOString();
+  const code = holding.productCode.trim();
+
+  // 6位数字代码：不管 productType 写什么，都先试东财 lsjz（覆盖所有公募基金：股票/混合/债券/指数/QDII）
+  // 东财失败再 fallback 腾讯（应对实际是场内 A股/ETF 但 productType 写错的情况）
+  if (/^\d{6}$/.test(code)) {
+    try {
+      return await fetchEastMoneyFund(holding, fetchedAt);
+    } catch (fundError) {
+      try {
+        return await fetchTencentQuote(holding, fetchedAt);
+      } catch {
+        throw fundError; // 东财错误优先抛出
+      }
+    }
   }
+
+  // 带后缀代码（如 002384.SZ）：走腾讯
+  if (/^\d{6}\.(SH|SZ|BJ)$/.test(code)) {
+    return fetchTencentQuote(holding, fetchedAt);
+  }
+
   throw new Error('当前免费公开行情适配器不支持该产品类型或代码格式');
 }
 

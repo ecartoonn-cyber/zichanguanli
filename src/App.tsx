@@ -47,6 +47,76 @@ function MonthlyCalendar({ dailyPnlByDate }: { dailyPnlByDate: [string, { pnl: n
   );
 }
 
+function AssetAllocationDonut({ holdings, trackingById }: { holdings: Holding[]; trackingById: Record<string, MarketTrackingRow> }) {
+  const total = holdings.reduce((s, h) => {
+    const tracker = trackingById[h.holdingId];
+    const amount = tracker?.status === 'active' && tracker.estimated_amount !== null ? tracker.estimated_amount : h.currentAmount;
+    return s + amount;
+  }, 0);
+  if (total === 0) return null;
+  const buckets = { '权益': 0, '固收': 0, '黄金': 0, '现金/其他': 0 };
+  holdings.forEach((h) => {
+    const tracker = trackingById[h.holdingId];
+    const amount = tracker?.status === 'active' && tracker.estimated_amount !== null ? tracker.estimated_amount : h.currentAmount;
+    const cls = h.analysisAssetClass ?? '';
+    if (cls.includes('权益') || h.productType.includes('股票') || h.productType.includes('混合')) buckets['权益'] += amount;
+    else if (cls.includes('固收') || h.productType.includes('债券')) buckets['固收'] += amount;
+    else if (cls.includes('黄金') || h.productType.includes('黄金')) buckets['黄金'] += amount;
+    else buckets['现金/其他'] += amount;
+  });
+  const target = { 权益: '30-35%', 固收: '60-65%', 黄金: '5-8%', '现金/其他': '—' };
+  const colors = { 权益: '#e07a5f', 固收: '#81b29a', 黄金: '#e9c46a', '现金/其他': '#b0b0b0' };
+  let angle = -90;
+  const r = 60, cx = 80, cy = 80;
+  const arcs = Object.entries(buckets).map(([label, val]) => {
+    const pct = val / total;
+    const start = angle;
+    angle += pct * 360;
+    const largeArc = pct > 0.5 ? 1 : 0;
+    const x1 = cx + r * Math.cos(start * Math.PI / 180), y1 = cy + r * Math.sin(start * Math.PI / 180);
+    const x2 = cx + r * Math.cos(angle * Math.PI / 180), y2 = cy + r * Math.sin(angle * Math.PI / 180);
+    return { label, pct, val, color: colors[label as keyof typeof colors], d: `M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${largeArc} 1 ${x2},${y2} Z` };
+  });
+  return (
+    <section className="panel allocation-panel">
+      <div className="panel-heading"><div><h2>资产配置概览</h2><p>方案 B 目标：权益 30-35% / 固收 60-65% / 黄金 5-8%</p></div></div>
+      <div className="allocation-body">
+        <svg width="160" height="160" viewBox="0 0 160 160">{arcs.map((a) => <path key={a.label} d={a.d} fill={a.color} />)}</svg>
+        <div className="allocation-list">
+          {arcs.map((a) => (
+            <div key={a.label} className="allocation-row">
+              <span className="dot" style={{ background: a.color }} />
+              <span>{a.label}</span>
+              <b>{(a.pct * 100).toFixed(1)}%</b>
+              <small>目标 {target[a.label as keyof typeof target]}</small>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DailyContributionRanking({ marketEstimates, trackingById, holdings }: { marketEstimates: MarketEstimateRow[]; trackingById: Record<string, MarketTrackingRow>; holdings: Holding[] }) {
+  if (!marketEstimates.length) return null;
+  const latestDate = marketEstimates[0].as_of_date;
+  const today = marketEstimates.filter((e) => e.as_of_date === latestDate && e.daily_change_amount !== null);
+  if (!today.length) return null;
+  const sorted = [...today].sort((a, b) => (b.daily_change_amount ?? 0) - (a.daily_change_amount ?? 0));
+  const topGain = sorted.slice(0, 5);
+  const topLose = sorted.slice(-5).reverse();
+  const nameOf = (id: string) => holdings.find((h) => h.holdingId === id)?.productName ?? id;
+  return (
+    <section className="panel contribution-panel">
+      <div className="panel-heading"><div><h2>当日贡献排行（{latestDate}）</h2><p>今日赚最多 / 亏最多各 TOP5</p></div></div>
+      <div className="contrib-grid">
+        <div><h3 className="gain">赚最多</h3>{topGain.map((e) => <div key={e.holdingId} className="contrib-row gain"><span>{nameOf(e.holdingId)}</span><b>+{(e.daily_change_amount ?? 0).toFixed(0)} 元</b></div>)}</div>
+        <div><h3 className="loss">亏最多</h3>{topLose.map((e) => <div key={e.holdingId} className="contrib-row loss"><span>{nameOf(e.holdingId)}</span><b>{(e.daily_change_amount ?? 0).toFixed(0)} 元</b></div>)}</div>
+      </div>
+    </section>
+  );
+}
+
 type FormValues = {
   holdingId: string;
   platform: Holding['platform'];
@@ -767,6 +837,12 @@ export default function App() {
         <MonthlyCalendar dailyPnlByDate={dailyPnlByDate} />
       )}
 
+      <AssetAllocationDonut holdings={state.holdings} trackingById={trackingById} />
+
+      {dailyPnlByDate.length > 0 && (
+        <DailyContributionRanking marketEstimates={marketEstimates} trackingById={trackingById} holdings={state.holdings} />
+      )}
+
       <div className="content-grid">
         <section className="panel market-panel"><div className="panel-heading"><div><h2>交易日行情检查</h2><p>跟踪基于免费公开行情的估算；数据日期和来源逐项展示</p></div><button className="button button-primary" disabled={marketBusy || !cloudReady} onClick={() => void checkMarketNow()}>{marketBusy ? '检查中…' : '立即检查已跟踪产品'}</button></div>
           <div className="market-summary"><span>已跟踪 {marketTracking.filter((item) => item.enabled).length} 项</span><span>最近载入估算记录 {marketEstimates.length} 条（最多 500 条）</span><span>最近任务：{marketRuns[0] ? `${marketRuns[0].status} · 更新 ${marketRuns[0].updated_count} / 检查 ${marketRuns[0].checked_count} · 开始 ${new Date(marketRuns[0].started_at).toLocaleString('zh-CN')}${marketRuns[0].completed_at ? ` · 完成 ${new Date(marketRuns[0].completed_at).toLocaleString('zh-CN')}` : ' · 运行中'}` : '尚无任务记录'}</span></div>
@@ -790,7 +866,11 @@ export default function App() {
                     {tracking.status === 'active' ? '实测' : tracking.status === 'unsupported' ? '无行情' : tracking.status === 'awaiting-baseline' ? '待重设基准' : tracking.status}
                   </span>
                   {tracking.status === 'active' ? ` ${tracking.latest_price_date} · ${tracking.latest_source}` : ` ${tracking.reason ?? '待检查'}`}
-                  {tracking.status === 'active' && tracking.latest_price_date && tracking.latest_price_date < '2026-10-18' && <span className="track-lag">（净值滞后）</span>}
+                  {tracking.status === 'active' && tracking.latest_price_date && (() => {
+                    const lagDays = Math.floor((Date.parse(today()) - Date.parse(tracking.latest_price_date)) / 86400000);
+                    if (lagDays >= 1) return <span className="track-lag">（净值滞后 {lagDays} 天{holding.marketScope?.includes('海外') || holding.productType?.includes('QDII') ? ' · QDII T+2' : ''}）</span>;
+                    return null;
+                  })()}
                 </p>}
               </div>
               <div className="holding-numbers"><strong>{money(isEstimated ? tracking!.estimated_amount : holding.currentAmount, holding.currency)}{isEstimated && <small>行情估算</small>}</strong><span className={performance.returnPct !== null && performance.returnPct < 0 ? 'loss' : 'gain'}>{performance.returnPct === null ? '累计收益率无法可靠计算' : `估算累计收益率 ${performance.returnPct.toFixed(2)}%`}</span>{tracking?.status === 'active' && (performance.returnPct === null || !['累计金额', '累计比例'].includes(holding.pnlBasis)) && <span className={(tracking.estimated_return_pct ?? 0) < 0 ? 'loss' : 'gain'}>启用以来 {tracking.estimated_return_pct?.toFixed(2)}%</span>}<small>{tracking?.status === 'active' ? `启用以来盈亏：${money(tracking.estimated_since_baseline, holding.currency)}` : holding.pnlValue === null ? '盈亏未录入' : `${holding.pnlBasis}：${holding.pnlValue}`}{latestEstimate ? ` · 日涨跌 ${latestEstimate.daily_return_pct === null ? '—' : `${latestEstimate.daily_return_pct.toFixed(2)}%`}` : ''}</small></div>
