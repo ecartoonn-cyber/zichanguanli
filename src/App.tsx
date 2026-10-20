@@ -11,6 +11,7 @@ import { loadCloudPortfolio, saveCloudPortfolio } from './services/cloudPortfoli
 import { enableMarketTracking, invokeMarketTracking, loadMarketDashboard, type MarketEstimateRow, type MarketJobRun, type MarketTrackingRow } from './services/marketTracking';
 
 function MonthlyCalendar({ dailyPnlByDate }: { dailyPnlByDate: [string, { pnl: number; amount: number; count: number }][] }) {
+  const [open, setOpen] = useState(false);
   // 数据最新日期所在月
   const latestDate = dailyPnlByDate[0]?.[0] ?? new Date().toISOString().slice(0, 10);
   const [y, m] = latestDate.split('-').map(Number);
@@ -25,24 +26,26 @@ function MonthlyCalendar({ dailyPnlByDate }: { dailyPnlByDate: [string, { pnl: n
   while (cells.length % 7 !== 0) cells.push(null);
   return (
     <section className="panel calendar-panel">
-      <div className="panel-heading">
-        <div><h2>{y}年{m}月 收益日历</h2><p>每个交易日格内显示当日估算总盈亏</p></div>
+      <div className="panel-heading" style={{ cursor: 'pointer' }} onClick={() => setOpen(!open)}>
+        <div><h2>{y}年{m}月 收益日历 {open ? '▾' : '▸'}</h2><p>每个交易日格内显示当日估算总盈亏</p></div>
         <span className={`calendar-total ${monthTotal < 0 ? 'loss' : 'gain'}`}>本月合计 {monthTotal >= 0 ? '+' : ''}{monthTotal.toFixed(0)} 元</span>
       </div>
-      <div className="calendar-grid">
-        {['日','一','二','三','四','五','六'].map(d => <span key={d} className="calendar-weekday">{d}</span>)}
-        {cells.map((date, i) => {
-          if (!date) return <span key={i} className="calendar-cell empty" />;
-          const v = byDate.get(date);
-          if (!v) return <span key={i} className="calendar-cell nodata">{Number(date.slice(8))}</span>;
-          return (
-            <span key={i} className={`calendar-cell ${v.pnl < 0 ? 'down' : 'up'}`} title={`${date}：${v.pnl.toFixed(0)} 元`}>
-              <em>{Number(date.slice(8))}</em>
-              <small>{v.pnl >= 0 ? '+' : ''}{v.pnl.toFixed(0)}</small>
-            </span>
-          );
-        })}
-      </div>
+      {open && (
+        <div className="calendar-grid">
+          {['日','一','二','三','四','五','六'].map(d => <span key={d} className="calendar-weekday">{d}</span>)}
+          {cells.map((date, i) => {
+            if (!date) return <span key={i} className="calendar-cell empty" />;
+            const v = byDate.get(date);
+            if (!v) return <span key={i} className="calendar-cell nodata">{Number(date.slice(8))}</span>;
+            return (
+              <span key={i} className={`calendar-cell ${v.pnl < 0 ? 'down' : 'up'}`} title={`${date}：${v.pnl.toFixed(0)} 元`}>
+                <em>{Number(date.slice(8))}</em>
+                <small>{v.pnl >= 0 ? '+' : ''}{v.pnl.toFixed(0)}</small>
+              </span>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -815,12 +818,12 @@ export default function App() {
         <section className="daily-summary panel">
           <div className="daily-summary-head">
             <div>
-              <span className="daily-label">今日估算收益（{todaySummary[0]}）</span>
+              <span className="daily-label">最新交易日估算收益（{todaySummary[0]}）</span>
               <strong className={todaySummary[1].pnl < 0 ? 'loss' : 'gain'}>
                 {todaySummary[1].pnl >= 0 ? '+' : ''}{todaySummary[1].pnl.toFixed(0)} 元
               </strong>
               <small className="daily-compare">
-                {yesterdaySummary ? <>昨日 {yesterdaySummary[0]}：{yesterdaySummary[1].pnl.toFixed(0)} 元{todaySummary[1].pnl > yesterdaySummary[1].pnl ? '，亏损收窄' : '，亏损扩大'}</> : '昨日数据暂无'}
+                {yesterdaySummary ? <>前一交易日 {yesterdaySummary[0]}：{yesterdaySummary[1].pnl.toFixed(0)} 元{todaySummary[1].pnl > yesterdaySummary[1].pnl ? '，亏损收窄' : '，亏损扩大'}</> : '前一交易日数据暂无'}
               </small>
             </div>
             <div className="daily-side">
