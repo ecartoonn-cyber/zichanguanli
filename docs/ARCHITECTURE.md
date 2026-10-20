@@ -40,14 +40,21 @@
 │       ├── supabase.ts         # Supabase 客户端工厂（仅 URL + anon key）+ 受控注册开关
 │       ├── cloudPortfolio.ts   # 云端资料读写（v2→v3 兼容迁移 + revision 乐观锁）
 │       ├── marketTracking.ts   # 行情跟踪、状态和历史估算读取
+│       ├── sectorValuation.ts  # 板块估值快照读取（anon 只读 sector_valuation 最新 as_of_date）
 │       ├── productLookup.ts    # 产品代码→名称查询（JSONP，A 股/场外基金等）
 │       ├── prompt.ts           # 生成研究 Prompt（含收益估算与安全约束）
 │       └── storage.test.ts
 ├── supabase/migrations/
 │   ├── 202610180001_user_portfolios.sql   # 云同步建表 + RLS + 触发器（幂等）
-│   └── 202610180002_market_tracking.sql   # 行情、私有估算/任务记录与 RLS
+│   ├── 202610180002_market_tracking.sql   # 行情、私有估算/任务记录与 RLS
+│   └── 202610200001_sector_valuation.sql  # 板块估值快照表 + RLS（anon 只读）
 ├── supabase/functions/market-data/        # 行情 Provider + 估算与任务函数（待部署）
 ├── supabase/cron/                          # 工作日 Cron SQL 模板
+├── scripts/
+│   └── sector_valuation.py                # 板块估值快照（乐咕分位 + 申万涨跌 + 股债利差 → 双指数）
+├── .github/workflows/
+│   ├── deploy-edgeone.yml                 # EdgeOne 备用部署通道（需仓库变量）
+│   └── sector-valuation.yml               # 每日 23:30 快照任务（需 SUPABASE_SERVICE_KEY）
 ├── docs/                       # 规格、使用说明、架构、部署、实施状态等
 └── dist/                       # 构建产物（index.html + assets/）
 ```
@@ -81,6 +88,14 @@
 
 `performance.ts` 仅在**累计盈亏与当前金额口径匹配且日期一致**时估算累计收益率，按分组成本基数加权，显示可计算覆盖数。行情跟踪另按确认的基准金额与价格推算持仓金额；每日/未知盈亏口径只展示启用以来的估算变化。申赎、分红、费用和份额变化会造成误差；手工改金额或盈亏后需重设基准。
 
+### 3.4 板块估值模块（抄底 / 风险指数，2026-10-21）
+
+数据流：GitHub Actions（每日 23:30，或 `scripts/sector_valuation.py` 手动）→ 乐咕乐股行业 PE/PB/股息率+历史分位、申万指数日线涨跌幅、沪深300 PE 与 10 年国债的股债利差 → 按权重计算抄底/风险指数 → upsert `public.sector_valuation`（unique(sector_code, as_of_date)）→ 前端 `SectorValuationPanel` anon 只读最新快照。
+
+- 抄底指数 = 0.3·(100−PE分位) + 0.3·(100−PB分位) + 0.2·股债利差分位 + 0.1·clamp(−近3月涨跌×4) + 0.1·股息率分位；≥75 极度低估 / 60–75 低估 / 40–60 中性 / 25–40 合理偏高 / <25 高估
+- 风险指数 = 0.3·PE分位 + 0.3·PB分位 + 0.25·clamp(近1月涨跌×3) + 0.15·(100−股息率分位)；分位缺失按 50 中性处理
+- 数据源：乐咕乐股 `sw-industry-overview`（页面内嵌历史分位）、申万宏源指数日线 API、乐咕沪深300 PE + 东财 10 年国债（股债利差）。启发式打分，非投资建议。
+
 ## 4. 部署架构（2026-10-18）
 
 ```
@@ -107,9 +122,9 @@
 
 | 资源 | 标识 | 状态 |
 |---|---|---|
-| EdgeOne 项目 | `personal-invest-os`（makers-l7akpc0tkpgz） | ✅ 已关联 GitHub `ecartoonn-cyber/zichanguanli` 的 `main` 分支；最近一次用户确认的 Git 构建提交为 `5326d4a`，EdgeOne deployment ID 未记录 |
-| EdgeOne 访问地址 | 最近确认：`https://personal-invest-os-dpargjupipe2.edgeone.dev` | ✅ 对应提交 `5326d4a`；本地新功能尚未发布 |
-| 官方 Supabase | `dosomrwbcxvponmawdrh` | 云同步旧表已配置；行情迁移、函数与 Cron 尚未部署/验收 |
+| EdgeOne 项目 | `personal-invest-os`（makers-l7akpc0tkpgz） | ✅ 已关联 GitHub `ecartoonn-cyber/zichanguanli` 的 `main` 分支；最近部署 `dpi3b2prs3yd`（提交 `4aa0541`，板块估值模块） |
+| EdgeOne 访问地址 | `https://personal-invest-os-dpi3b2prs3yd.edgeone.dev` | ✅ 板块估值面板已上线（数据表未建时显示迁移指引） |
+| 官方 Supabase | `dosomrwbcxvponmawdrh` | 云同步表已配置；`sector_valuation` 迁移待 Dashboard 执行；行情迁移/函数/Cron 尚未部署/验收 |
 | 火山工作区 | `personal-invest-os`（glad-apple-e94f93e1） | 保留（旧版前端 + 已迁移数据库） |
 | 火山 Pages | `personal-invest-os`（q17ilxk1hv） | 保留，未删除 |
 
@@ -145,19 +160,21 @@
 
 ## 6. 当前状态与待办
 
-**已完成**：本地 MVP → 火山上线 → 云同步代码 + 迁移（火山）→ 官方 Supabase 后端切换 → EdgeOne 主托管上线（已验证登录表单可见）→ 多维分类/收益汇总/配置目标/导入恢复点及行情估算前后端代码。
+**已完成**：本地 MVP → 火山上线 → 云同步代码 + 迁移（火山）→ 官方 Supabase 后端切换 → EdgeOne 主托管上线（已验证登录表单可见）→ 多维分类/收益汇总/配置目标/导入恢复点及行情估算前后端代码 → 板块估值模块（代码、脚本、Actions、前端、EdgeOne 部署上线）。
 **待办**：
 1. 在官方 Supabase 执行 `202610180002_market_tracking.sql`，部署 `market-data` Function，安全保存 Cron secret 并配置 Cron；详见 `MARKET_DATA_SETUP.md`。
-2. 使用一个明确确认的基准持仓测试行情取数、RLS 隔离、每日幂等记录、手工重设基准和任务失败状态。
-3. 端到端验收登录云同步、备份恢复和部署；本地新改动尚未推送/部署。
-4. （可选）EdgeOne 自定义域名/备案；火山旧版下线。
+2. 在官方 Supabase Dashboard 执行 `202610200001_sector_valuation.sql`（板块估值表）；在 GitHub 仓库配置 Actions 变量 `NEXT_PUBLIC_SUPABASE_URL` + 密钥 `SUPABASE_SERVICE_KEY`，触发一次或等每日任务生成首份快照，验证面板数据渲染。
+3. 使用一个明确确认的基准持仓测试行情取数、RLS 隔离、每日幂等记录、手工重设基准和任务失败状态。
+4. 端到端验收登录云同步、备份恢复和部署。
+5. （可选）EdgeOne 自定义域名/备案；火山旧版下线。
 
 ## 7. 关键标识速查
 
 | 项 | 值 |
 |---|---|
-| EdgeOne 项目/最近确认部署 | makers-l7akpc0tkpgz / dpargjupipe2 |
+| EdgeOne 项目/最近部署 | makers-l7akpc0tkpgz / dpi3b2prs3yd（提交 4aa0541） |
 | 官方 Supabase 项目 | dosomrwbcxvponmawdrh |
 | 火山工作区 / Pages | glad-apple-e94f93e1 / q17ilxk1hv |
-| 本地迁移文件 | supabase/migrations/202610180001_user_portfolios.sql |
+| 本地迁移文件 | supabase/migrations/202610180001_user_portfolios.sql、202610180002_market_tracking.sql、202610200001_sector_valuation.sql |
+| 板块估值脚本 / Actions | scripts/sector_valuation.py / .github/workflows/sector-valuation.yml |
 | 构建产物 | dist/（index.html + assets/index-*.js + assets/index-*.css） |

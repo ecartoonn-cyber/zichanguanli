@@ -21,16 +21,25 @@ pnpm dev
 4. 生成研究 Prompt，确认后复制到 ChatGPT。Prompt 要求核验信息时效、证据、反方观点、利弊和不操作选项。
 5. 每次修改前后导出 JSON 备份。导入会替换本机当前记录，应用会先预览数量和部分项目并再次确认。
 
-## 线上部署（2026-10-18）
+## 线上部署（2026-10-18，板块估值 2026-10-21）
 
 前端托管在 **EdgeOne Makers**（主），后端连接 **官方 Supabase**：
 
 - EdgeOne 项目：`personal-invest-os`（makers-l7akpc0tkpgz）· 已关联 GitHub 仓库 `ecartoonn-cyber/zichanguanli` 的 `main` 分支
-- 最近确认成功的 EdgeOne 部署：`dpargjupipe2`，地址 https://personal-invest-os-dpargjupipe2.edgeone.dev（本地新功能变更尚未部署）
-- 用户确认提交 `5326d4a` 后 EdgeOne Git 构建成功；该次 EdgeOne 部署 ID 未记录
+- 最近确认成功的 EdgeOne 部署：`dpi3b2prs3yd`（提交 `4aa0541`，A股板块估值模块），地址 https://personal-invest-os-dpi3b2prs3yd.edgeone.dev
 - 官方 Supabase 后端：项目 `dosomrwbcxvponmawdrh` · URL `https://dosomrwbcxvponmawdrh.supabase.co`（Auth 邮箱密码登录 + Postgres RLS）
 - 部署内容：`pnpm build` 产物 dist（index.html + assets）；构建时仅注入 Supabase URL 与 anon key（公开），service-role key / 数据库密码从不进入构建
 - 火山 IGA Pages 旧版（`personal-invest-os` → q17ilxk1hv）保留可访问，未删除
+
+### 板块估值模块（抄底 / 风险指数）
+
+页面新增「板块估值与抄底 / 风险指数」面板：申万一级 31 行业，展示 PE/PB/股息率历史百分位（乐咕乐股）、近 1 月/3 月涨跌幅（申万指数）、抄底指数与风险指数及信号灯。
+
+- 数据表：`public.sector_valuation`，迁移 `supabase/migrations/202610200001_sector_valuation.sql`（RLS：anon 只读）
+- 快照脚本：`scripts/sector_valuation.py`（`--dry-run` 本地试跑；写库需 `SUPABASE_URL` + `SUPABASE_SERVICE_KEY`）
+- 每日快照：`.github/workflows/sector-valuation.yml`（每天 23:30 北京时间；需配置 repo 变量 `NEXT_PUBLIC_SUPABASE_URL` 与密钥 `SUPABASE_SERVICE_KEY`）
+- **待办**：① 在 Supabase Dashboard → SQL Editor 执行上述迁移；② 配置 Actions 变量/密钥后手动触发一次或等次日定时任务。两者完成前，线上面板显示「请确认已执行迁移 SQL」/「暂无数据」。
+
 
 当前代码增加了多维分类、资产配置目标、导入恢复点和交易日行情估算。行情后端采用独立 Supabase 迁移、Edge Function 和 Cron；完成配置前，线上页面不会自动取行情。完整部署步骤见 [`docs/MARKET_DATA_SETUP.md`](docs/MARKET_DATA_SETUP.md)，架构见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 

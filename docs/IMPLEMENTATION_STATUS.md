@@ -97,3 +97,19 @@
 启用云同步后首次登录会显示本机和云端记录数量，必须明确选用一侧；应用不自动合并或覆盖。建议先导出本机 JSON 备份。云端同步启用后，每次更改会同时保存本机和 Supabase；如果网络失败，本机版本保留并显示同步错误。
 
 原单文件 HTML 和模块化应用使用不同的浏览器存储空间。若原型中已有真实数据，请先从原型导出 JSON，再在新应用里通过“导入备份”恢复。导入会替换当前本地数据，必须先导出现有备份。不要通过清理浏览器数据来迁移。
+
+## 板块估值模块（2026-10-20/21）
+
+**已上线**：EdgeOne 部署 `dpi3b2prs3yd`（提交 `4aa0541`），访问 `https://personal-invest-os-dpi3b2prs3yd.edgeone.dev`；线上实测板块估值面板正常渲染（因数据表未建，按设计显示「读取失败…请确认已执行迁移 SQL」指引）。
+
+- 前端：`src/services/sectorValuation.ts`（anon 只读最新 as_of_date 快照）+ `src/App.tsx` 内 `SectorValuationPanel`（排序、双指数仪表条、信号灯、因子分解、空态/错误指引）+ `src/styles.css`（sector-* 样式）。
+- 数据源与算法：申万一级 31 行业；乐咕乐股行业 PE/PB/股息率+历史分位、申万指数日线（近1月/3月/年初涨跌）、沪深300 PE 与 10 年国债的股债利差分位。抄底指数 = 0.3·(100−PE分位)+0.3·(100−PB分位)+0.2·股债利差分位+0.1·clamp(−近3月涨跌×4)+0.1·股息率分位；风险指数 = 0.3·PE分位+0.3·PB分位+0.25·clamp(近1月涨跌×3)+0.15·(100−股息率分位)；分位缺失按 50。启发式打分，非投资建议。
+- 快照脚本：`scripts/sector_valuation.py`，`--dry-run` 实测 31 行业全通（2026-10-20 数据）；写库需 `SUPABASE_URL` + `SUPABASE_SERVICE_KEY`，POST `/rest/v1/sector_valuation?on_conflict=sector_code,as_of_date` + `Prefer: resolution=merge-duplicates`。
+- 每日任务：`.github/workflows/sector-valuation.yml`（cron `30 15 * * *` UTC = 每天 23:30 北京时间 + workflow_dispatch；变量 `NEXT_PUBLIC_SUPABASE_URL` + 密钥 `SUPABASE_SERVICE_KEY`，缺失则跳过并提示）。
+- 迁移：`supabase/migrations/202610200001_sector_valuation.sql`（unique(sector_code, as_of_date) 供 upsert；RLS：anon/authenticated 只读 + 索引）。**尚未在官方 Supabase Dashboard 执行**（官方 MCP execute_sql 只读，无法代跑）。
+- 构建验证：tsc 通过、vite build 成功（`index-UJiOP-Wp.js` + 独立 supabase chunk + `index-FR3v-c03.css`）、Vitest 14/14 通过；本地 preview 实测无连接/表未建两态提示正确。
+
+**待用户操作（数据生效链路，两项缺一不可）**：
+1. Supabase Dashboard → SQL Editor 粘贴执行 `supabase/migrations/202610200001_sector_valuation.sql`；
+2. GitHub 仓库 Settings → Secrets and variables → Actions：新增变量 `NEXT_PUBLIC_SUPABASE_URL`（https://dosomrwbcxvponmawdrh.supabase.co）与密钥 `SUPABASE_SERVICE_KEY`（Dashboard → Settings → API → service_role，只进 repo secret 与本地 env，绝不进前端），然后在 Actions 页手动 Run workflow 一次（或等次日 23:30 自动执行）。完成后前端面板即显示各行业估值与双指数。
+- 说明：Actions 顶层 success 不代表部署/写库成功；每日任务需核对其日志。`SUPABASE_SERVICE_KEY` 有完整写库权限，只配置为 Actions secret，不要暴露给浏览器。

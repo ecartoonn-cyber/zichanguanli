@@ -11,6 +11,12 @@
 - `.github/workflows/deploy-edgeone.yml` is a separate fallback path. It requires repository variables `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_SUPABASE_SIGNUP_ENABLED` and secret `EDGEONE_API_TOKEN`. Missing Supabase URL or Publishable key causes build/deploy steps to skip.
 - Supabase URL currently documented for this project: `https://dosomrwbcxvponmawdrh.supabase.co`. Use only the public anon/Publishable key in frontend build variables; never expose `service_role`, `sb_secret_`, database passwords, or connection strings.
 
+## Sector valuation module
+
+- Frontend panel reads `public.sector_valuation` with the anon key (RLS read-only). Migration `supabase/migrations/202610200001_sector_valuation.sql` must be run manually in the Supabase Dashboard SQL Editor (the official Supabase MCP `execute_sql` is read-only and cannot run DDL).
+- Daily snapshot: `.github/workflows/sector-valuation.yml` at 23:30 Beijing time. It needs repository variable `NEXT_PUBLIC_SUPABASE_URL` and secret `SUPABASE_SERVICE_KEY`; without them the job skips. The service key must only live in the repo secret / local env — never in frontend build variables.
+- Snapshot script: `scripts/sector_valuation.py` (source: legulegu.com `sw-industry-overview` embedded percentiles + swsresearch index daily API; dry-run works without credentials).
+
 ## Build portability
 
 - Never add a machine-specific absolute cache path to `pnpm-workspace.yaml`, `.npmrc`, or other shared build configuration. In particular, do not restore `storeDir: /Users/ka/Library/pnpm/store/v11`.
