@@ -176,8 +176,30 @@ export default function App() {
     void loadCloudPortfolio(cloudClient, session.user.id).then((remote) => {
       if (!active) return;
       cloudRevision.current = remote?.revision ?? null;
-      setCloudChoice({ remote });
-      setCloudMessage(remote ? `云端资料更新时间：${new Date(remote.updated_at).toLocaleString('zh-CN')}` : '账号下还没有云端持仓资料。');
+      // 记住用户上次的选择，刷新后自动恢复，不再弹窗
+      const lastChoice = localStorage.getItem(`cloud-choice-${session.user.id}`);
+      if (lastChoice === 'cloud' && remote) {
+        try {
+          saveState(remote.state);
+          setState(remote.state);
+          setStorageError('');
+          cloudRevision.current = remote.revision;
+          setCloudReady(true);
+          setCloudChoice(null);
+          setCloudSyncedAt(remote.updated_at);
+          setCloudMessage('已从云端恢复资料（自动）。');
+        } catch {
+          setCloudChoice({ remote });
+        }
+      } else if (lastChoice === 'local' && remote) {
+        setCloudReady(true);
+        setCloudChoice(null);
+        setCloudSyncedAt(new Date().toISOString());
+        setCloudMessage('已启用云端同步（自动）。');
+      } else {
+        setCloudChoice({ remote });
+        setCloudMessage(remote ? `云端资料更新时间：${new Date(remote.updated_at).toLocaleString('zh-CN')}` : '账号下还没有云端持仓资料。');
+      }
     }).catch((error: unknown) => {
       if (!active) return;
       setCloudMessage(`云端读取失败：${error instanceof Error ? error.message : '未知错误'}。请检查数据库迁移和权限策略。`);
@@ -421,6 +443,7 @@ export default function App() {
         setCloudReady(true);
         setCloudChoice(null);
         setCloudSyncedAt(new Date().toISOString());
+        localStorage.setItem(`cloud-choice-${session.user.id}`, 'local');
         setCloudMessage('已启用云端同步；本机资料已保存到当前账号。');
       } catch (error) {
         setCloudMessage(`云端保存失败，本机数据未改动：${error instanceof Error ? error.message : '未知错误'}`);
@@ -445,6 +468,7 @@ export default function App() {
       setCloudReady(true);
       setCloudChoice(null);
       setCloudSyncedAt(remote.updated_at);
+      localStorage.setItem(`cloud-choice-${session.user.id}`, 'cloud');
       setCloudMessage('已从云端恢复资料，并启用后续同步。');
     } catch {
       setCloudMessage('云端资料已读取，但本机保存失败；请检查浏览器存储空间。');
