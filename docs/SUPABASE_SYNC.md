@@ -14,7 +14,7 @@
 ## 在官方 Supabase 中初始化
 
 1. 登录 https://supabase.com/dashboard ，打开项目 `dosomrwbcxvponmawdrh`。
-2. 在 **SQL Editor** 执行 [`../supabase/migrations/202610180001_user_portfolios.sql`](../supabase/migrations/202610180001_user_portfolios.sql)（建表 + RLS + 触发器，幂等可重跑；只操作本应用私有表，不动其他表）。**这是云同步生效的最后一步，尚未执行。**
+2. 在 **SQL Editor** 执行 [`../supabase/migrations/202610180001_user_portfolios.sql`](../supabase/migrations/202610180001_user_portfolios.sql)（建表 + RLS + 触发器，幂等可重跑；只操作本应用私有表，不动其他表）。✅ **已执行（2026-10-18）。**
 3. Auth 配置（可选但推荐）：Settings → Authentication → URL Configuration，把当前 EdgeOne 访问域名加入 Site URL 与 Redirect URLs，否则邮箱确认/密码重置链接可能无法回跳。密码重置邮件使用平台默认邮件服务即可起步。
 4. 受控注册：注册开关由公开构建变量 `NEXT_PUBLIC_SUPABASE_SIGNUP_ENABLED` 控制，默认 `false`（前端无注册按钮）。需要新增账号时改为 `true` 重新构建部署，创建后改回 `false` 再部署；或在控制台 Auth → Users 邀请邮箱。
 5. 部署后先用空资料测试登录、读写隔离和退出登录，再导入或上传真实持仓。所有设备登录同一账号后会使用同一份云端资料。
@@ -29,6 +29,6 @@
 
 ## 当前限制
 
-- 官方 Supabase 的 `user_portfolios` 迁移尚未执行（需在 Dashboard SQL Editor 手动执行；自动化通道只读）。
 - 前端构建仅显式映射 Supabase URL 和 anon key，不把 service-role、数据库密码或连接串放入浏览器包。
 - 云端同步仅保存当前清单与问卷，不记录交易流水或历史快照；没有行情定时更新和自动交易。
+- 端到端真实账号登录+上传数据尚未验收。
