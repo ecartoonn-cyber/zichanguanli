@@ -396,7 +396,8 @@ export default function App() {
   }, [marketEstimates]);
   const performanceHoldings = useMemo(() => state.holdings.map((holding) => {
     const tracking = trackingById[holding.holdingId];
-    if (tracking?.status !== 'active' || tracking.estimated_amount === null) return holding;
+    const useEstimate = (tracking?.status === 'active' || tracking?.status === 'intraday') && tracking.estimated_amount !== null;
+    if (!useEstimate) return holding;
     const pnlValue = holding.pnlBasis === '累计比例'
       ? tracking.estimated_return_pct
       : holding.pnlBasis === '累计金额' ? tracking.estimated_pnl_value : holding.pnlValue;
