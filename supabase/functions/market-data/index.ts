@@ -254,13 +254,26 @@ async function processHolding(userId: string, holding: Holding, mode: 'enable' |
     return { status: reason.includes('不支持') ? 'unsupported' : 'failed', reason };
   }
   await recordQuote(quote);
-  // 交易时段：只更新状态标记为盘中实时，不更新持久化收益数据
+  // 交易时段：只更新状态标记为盘中实时，写当日快照供前端显示预估，但不更新持久化收益数据
   if (isTradingHours() && !['现金类产品', '银行理财'].includes(holding.productType)) {
     const reason = `盘中实时行情（最新 ${quote.asOfDate}，涨跌 ${quote.dailyReturnPct?.toFixed(2)}%），收盘后正式更新`;
     const { error } = await admin.from('user_market_tracking').update({
       status: 'intraday', reason, last_checked_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     }).eq('user_id', userId).eq('holding_id', holding.holdingId);
     if (error) throw error;
+    // 写当日盘中快照（不更新 tracking 的持久化金额，只供前端显示预估波动）
+    if (existing?.baseline_price && quote.price) {
+      const changePct = ((quote.price / existing.baseline_price) - 1) * 100;
+      const estimatedAmount = Number(existing.baseline_amount) * (1 + changePct / 100);
+      const estimatedPnl = estimatedAmount - Number(existing.baseline_amount);
+      await admin.from('user_market_estimates').upsert({
+        user_id: userId, holding_id: holding.holdingId, product_code: holding.productCode,
+        product_type: holding.productType, quote_date: quote.asOfDate, price: quote.price,
+        daily_return_pct: quote.dailyReturnPct, estimated_amount: estimatedAmount,
+        estimated_pnl_value: estimatedPnl, estimated_since_baseline: estimatedPnl,
+        estimated_return_pct: changePct, source: quote.source + '（盘中预估）', computed_at: new Date().toISOString(),
+      }, { onConflict: 'user_id,holding_id,quote_date' });
+    }
     return { status: 'intraday', reason };
   }
   const sourceChanged = existing && (

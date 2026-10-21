@@ -436,9 +436,10 @@ export default function App() {
   const last7Pnl = useMemo(() => dailyPnlByDate.slice(0, 7).reduce((s, [, v]) => s + v.pnl, 0), [dailyPnlByDate]);
   const last30Pnl = useMemo(() => dailyPnlByDate.slice(0, 30).reduce((s, [, v]) => s + v.pnl, 0), [dailyPnlByDate]);
   const trackingStats = useMemo(() => {
-    const s = { active: 0, unsupported: 0, other: 0 };
+    const s = { active: 0, intraday: 0, unsupported: 0, other: 0 };
     for (const t of effectiveMarketTracking) {
       if (t.status === 'active') s.active += 1;
+      else if (t.status === 'intraday') s.intraday += 1;
       else if (t.status === 'unsupported') s.unsupported += 1;
       else s.other += 1;
     }
@@ -907,7 +908,7 @@ export default function App() {
         <section className="daily-summary panel">
           <div className="daily-summary-head">
             <div>
-              <span className="daily-label">最新交易日估算收益（{todaySummary[0]}）</span>
+              <span className="daily-label">{trackingStats.intraday > 0 ? '今日盘中预估收益' : '最新交易日估算收益'}（{todaySummary[0]}）</span>
               <strong className={todaySummary[1].pnl < 0 ? 'loss' : 'gain'}>
                 {todaySummary[1].pnl >= 0 ? '+' : ''}{todaySummary[1].pnl.toFixed(0)} 元
               </strong>
