@@ -143,11 +143,14 @@ async function fetchQuote(holding: Holding): Promise<Quote> {
   const fetchedAt = new Date().toISOString();
   const code = holding.productCode.trim();
 
-  // 按代码特征路由：A股/ETF 走腾讯，场外基金走东财
+  // 优先按 productType 判断，避免 00 开头代码混淆 A股和场外基金
+  const productType = holding.productType ?? '';
+  const isStockOrETF = productType === 'A股股票' || productType === '场内ETF';
+  const isFund = productType === '场外基金';
+
   if (/^\d{6}$/.test(code)) {
-    const isStockOrETF = /^(60|00|30|51|15|56|58)/.test(code);
     if (isStockOrETF) {
-      // A股/ETF：先试腾讯，失败 fallback 东财（应对部分 ETF 代码格式特殊）
+      // A股/ETF：先试腾讯，失败 fallback 东财
       try {
         return await fetchTencentQuote(holding, fetchedAt);
       } catch (tencentError) {
@@ -158,16 +161,26 @@ async function fetchQuote(holding: Holding): Promise<Quote> {
         }
       }
     }
-    // 场外基金：先试东财，失败 fallback 腾讯
-    try {
-      return await fetchEastMoneyFund(holding, fetchedAt);
-    } catch (fundError) {
+    if (isFund) {
+      // 场外基金：先试东财，失败 fallback 腾讯
       try {
-        return await fetchTencentQuote(holding, fetchedAt);
-      } catch {
-        throw fundError;
+        return await fetchEastMoneyFund(holding, fetchedAt);
+      } catch (fundError) {
+        try {
+          return await fetchTencentQuote(holding, fetchedAt);
+        } catch {
+          throw fundError;
+        }
       }
     }
+    // productType 未知：按代码前缀 fallback
+    const looksLikeStock = /^(60|68|30|51|15|56|58)/.test(code);
+    if (looksLikeStock) {
+      try { return await fetchTencentQuote(holding, fetchedAt); }
+      catch { return await fetchEastMoneyFund(holding, fetchedAt); }
+    }
+    try { return await fetchEastMoneyFund(holding, fetchedAt); }
+    catch { return await fetchTencentQuote(holding, fetchedAt); }
   }
 
   // 带后缀代码（如 002384.SZ）：走腾讯
