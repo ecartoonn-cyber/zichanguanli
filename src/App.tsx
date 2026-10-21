@@ -110,12 +110,12 @@ function DailyContributionRanking({ marketEstimates, holdings }: { marketEstimat
     holdingId: e.holding_id,
     dailyPnl: (e.daily_return_pct ?? 0) * (e.estimated_amount ?? 0) / 100,
   })).sort((a, b) => b.dailyPnl - a.dailyPnl);
-  const topGain = sorted.slice(0, 5);
-  const topLose = sorted.slice(-5).reverse();
+  const topGain = sorted.slice(0, 10);
+  const topLose = sorted.slice(-10).reverse();
   const nameOf = (id: string) => holdings.find((h) => h.holdingId === id)?.productName ?? id;
   return (
     <section className="panel contribution-panel">
-      <div className="panel-heading"><div><h2>当日贡献排行（{latestDate}）</h2><p>今日赚最多 / 亏最多各 TOP5</p></div></div>
+      <div className="panel-heading"><div><h2>当日贡献排行（{latestDate}）</h2><p>今日赚最多 / 亏最多各 TOP10</p></div></div>
       <div className="contrib-grid">
         <div><h3 className="gain">赚最多</h3>{topGain.map((e) => <div key={e.holdingId} className="contrib-row gain"><span>{nameOf(e.holdingId)}</span><b>+{e.dailyPnl.toFixed(0)} 元</b></div>)}</div>
         <div><h3 className="loss">亏最多</h3>{topLose.map((e) => <div key={e.holdingId} className="contrib-row loss"><span>{nameOf(e.holdingId)}</span><b>{e.dailyPnl.toFixed(0)} 元</b></div>)}</div>
