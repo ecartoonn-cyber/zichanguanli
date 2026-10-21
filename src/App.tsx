@@ -415,15 +415,26 @@ export default function App() {
 
   // 按交易日聚合当日总盈亏（从 user_market_estimates）
   const dailyPnlByDate = useMemo(() => {
-    const map: Record<string, { pnl: number; amount: number; count: number }> = {};
+    // 先按日期汇总累计盈亏（estimated_since_baseline）
+    const cumMap: Record<string, { cumPnl: number; amount: number; count: number }> = {};
     for (const e of marketEstimates) {
       const key = e.quote_date;
-      if (!map[key]) map[key] = { pnl: 0, amount: 0, count: 0 };
-      map[key].pnl += Number(e.estimated_pnl_value ?? 0);
-      map[key].amount += Number(e.estimated_amount ?? 0);
-      map[key].count += 1;
+      if (!cumMap[key]) cumMap[key] = { cumPnl: 0, amount: 0, count: 0 };
+      cumMap[key].cumPnl += Number(e.estimated_since_baseline ?? 0);
+      cumMap[key].amount += Number(e.estimated_amount ?? 0);
+      cumMap[key].count += 1;
     }
-    return Object.entries(map).sort(([a], [b]) => b.localeCompare(a));
+    // 按日期倒序排列
+    const sorted = Object.entries(cumMap).sort(([a], [b]) => b.localeCompare(a));
+    // 计算当日盈亏 = 当日累计 - 前一日累计
+    const result: [string, { pnl: number; amount: number; count: number }][] = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const [date, data] = sorted[i];
+      const prevCum = i + 1 < sorted.length ? sorted[i + 1][1].cumPnl : 0;
+      const dailyPnl = data.cumPnl - prevCum;
+      result.push([date, { pnl: dailyPnl, amount: data.amount, count: data.count }]);
+    }
+    return result;
   }, [marketEstimates]);
 
   const todaySummary = dailyPnlByDate[0] ?? null;
