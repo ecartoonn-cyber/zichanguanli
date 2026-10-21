@@ -35,6 +35,7 @@ function calculateHoldingEstimate(input: {
 type Holding = {
   holdingId: string; productCode: string; productType: string; currentAmount: number;
   pnlValue: number | null; pnlBasis: string; amountUpdatedAt: string; pnlUpdatedAt: string | null;
+  marketScope?: string;
 };
 type Quote = { code: string; type: string; price: number; dailyReturnPct: number | null; currency: string; source: string; asOfDate: string; fetchedAt: string };
 type Tracking = Record<string, unknown> & {
@@ -72,25 +73,27 @@ function isChinaWeekday() {
   const weekday = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', weekday: 'short' }).format(new Date());
   return weekday !== 'Sat' && weekday !== 'Sun';
 }
-function tencentSymbol(code: string, type: string): string | null {
+function isTradingHours(): boolean {
+  // A股交易时段：工作日 9:30-11:30, 13:00-15:00
+  if (!isChinaWeekday()) return false;
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  const minutes = Number(values.hour) * 60 + Number(values.minute);
+  return (minutes >= 570 && minutes <= 690) || (minutes >= 780 && minutes <= 900);
+}
+function tencentSymbol(code: string): string | null {
   const original = code.trim().toUpperCase();
   const suffix = original.match(/\.(SH|SZ|BJ)$/)?.[1] ?? null;
   const normalized = original.replace(/\.(SH|SZ|BJ)$/, '');
   if (!/^\d{6}$/.test(normalized)) return null;
-  if (type === 'A股股票') {
-    const exchange = /^[569]/.test(normalized) ? 'SH' : /^[023]/.test(normalized) ? 'SZ' : /^[48]/.test(normalized) ? 'BJ' : null;
-    if (suffix && suffix !== exchange) return null;
-    if (exchange === 'SH') return `sh${normalized}`;
-    if (exchange === 'SZ') return `sz${normalized}`;
-    if (exchange === 'BJ') return `bj${normalized}`;
-  }
-  if (type === '场内ETF') {
-    const exchange = /^(50|51|52|56|58)/.test(normalized) ? 'SH' : /^(15|16|18)/.test(normalized) ? 'SZ' : null;
-    if (suffix && suffix !== exchange) return null;
-    if (exchange === 'SH') return `sh${normalized}`;
-    if (exchange === 'SZ') return `sz${normalized}`;
-  }
-  return null;
+  // 按代码前缀自动判断交易所，不依赖 productType
+  let exchange: string | null = null;
+  if (/^(60|68|51|58|56)/.test(normalized)) exchange = 'SH';
+  else if (/^(00|30|15|16|18)/.test(normalized)) exchange = 'SZ';
+  else if (/^(4|8)/.test(normalized)) exchange = 'BJ';
+  if (!exchange) return null;
+  if (suffix && suffix !== exchange) return null;
+  return `${exchange.toLowerCase()}${normalized}`;
 }
 
 async function fetchEastMoneyFund(holding: Holding, fetchedAt: string): Promise<Quote> {
@@ -114,10 +117,7 @@ async function fetchEastMoneyFund(holding: Holding, fetchedAt: string): Promise<
 
 async function fetchTencentQuote(holding: Holding, fetchedAt: string): Promise<Quote> {
   const code = holding.productCode.trim().toUpperCase();
-  if (/^\d{6}\.(SH|SZ|BJ)$/.test(code) && !tencentSymbol(holding.productCode, holding.productType)) {
-    throw new Error('输入代码的交易所后缀与代码规则不匹配或当前市场不支持');
-  }
-  const symbol = tencentSymbol(holding.productCode, holding.productType);
+  const symbol = tencentSymbol(holding.productCode);
   if (!symbol) throw new Error('腾讯行情无法识别该代码的交易所');
   const expectedCode = holding.productCode.trim().toUpperCase().replace(/\.(SH|SZ|BJ)$/, '');
   const response = await fetch(`https://qt.gtimg.cn/q=${symbol}`, { signal: AbortSignal.timeout(10000) });
@@ -143,16 +143,29 @@ async function fetchQuote(holding: Holding): Promise<Quote> {
   const fetchedAt = new Date().toISOString();
   const code = holding.productCode.trim();
 
-  // 6位数字代码：不管 productType 写什么，都先试东财 lsjz（覆盖所有公募基金：股票/混合/债券/指数/QDII）
-  // 东财失败再 fallback 腾讯（应对实际是场内 A股/ETF 但 productType 写错的情况）
+  // 按代码特征路由：A股/ETF 走腾讯，场外基金走东财
   if (/^\d{6}$/.test(code)) {
+    const isStockOrETF = /^(60|00|30|51|15|56|58)/.test(code);
+    if (isStockOrETF) {
+      // A股/ETF：先试腾讯，失败 fallback 东财（应对部分 ETF 代码格式特殊）
+      try {
+        return await fetchTencentQuote(holding, fetchedAt);
+      } catch (tencentError) {
+        try {
+          return await fetchEastMoneyFund(holding, fetchedAt);
+        } catch {
+          throw tencentError;
+        }
+      }
+    }
+    // 场外基金：先试东财，失败 fallback 腾讯
     try {
       return await fetchEastMoneyFund(holding, fetchedAt);
     } catch (fundError) {
       try {
         return await fetchTencentQuote(holding, fetchedAt);
       } catch {
-        throw fundError; // 东财错误优先抛出
+        throw fundError;
       }
     }
   }
@@ -228,18 +241,32 @@ async function processHolding(userId: string, holding: Holding, mode: 'enable' |
     return { status: reason.includes('不支持') ? 'unsupported' : 'failed', reason };
   }
   await recordQuote(quote);
+  // 交易时段：只更新状态标记为盘中实时，不更新持久化收益数据
+  if (isTradingHours() && !['现金类产品', '银行理财'].includes(holding.productType)) {
+    const reason = `盘中实时行情（最新 ${quote.asOfDate}，涨跌 ${quote.dailyReturnPct?.toFixed(2)}%），收盘后正式更新`;
+    const { error } = await admin.from('user_market_tracking').update({
+      status: 'intraday', reason, last_checked_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    }).eq('user_id', userId).eq('holding_id', holding.holdingId);
+    if (error) throw error;
+    return { status: 'intraday', reason };
+  }
   const sourceChanged = existing && (
     parseNumber(existing.source_amount) !== holding.currentAmount ||
     parseNumber(existing.source_pnl_value) !== holding.pnlValue || existing.source_pnl_basis !== holding.pnlBasis ||
     existing.source_amount_updated_at !== holding.amountUpdatedAt || existing.source_pnl_updated_at !== holding.pnlUpdatedAt
   );
-  if (existing && !sourceChanged && quote.asOfDate < chinaDate() && isChinaWeekday()) {
-    const reason = `工作日检查未发现今日行情（最新数据日期 ${quote.asOfDate}）；可能休市或数据源延迟，未用旧行情生成新估算。`;
-    const { error } = await admin.from('user_market_tracking').update({
-      status: 'stale', reason, last_checked_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    }).eq('user_id', userId).eq('holding_id', holding.holdingId);
-    if (error) throw error;
-    return { status: 'stale', reason };
+  if (existing && !sourceChanged && isChinaWeekday()) {
+    const daysBehind = Math.floor((Date.parse(chinaDate()) - Date.parse(quote.asOfDate)) / 86400000);
+    const isQDII = holding.productType?.includes('QDII') || holding.marketScope?.includes('海外');
+    const maxDelay = isQDII ? 2 : 0;
+    if (daysBehind > maxDelay) {
+      const reason = `工作日检查未发现今日行情（最新数据日期 ${quote.asOfDate}）；可能休市或数据源延迟，未用旧行情生成新估算。`;
+      const { error } = await admin.from('user_market_tracking').update({
+        status: 'stale', reason, last_checked_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }).eq('user_id', userId).eq('holding_id', holding.holdingId);
+      if (error) throw error;
+      return { status: 'stale', reason };
+    }
   }
   const needsBaseline = mode === 'enable' || !existing?.baseline_price || sourceChanged;
   const shared = {
@@ -253,10 +280,8 @@ async function processHolding(userId: string, holding: Holding, mode: 'enable' |
   if (needsBaseline) {
     const cumulativePnlDateMismatch = ['累计金额', '累计比例'].includes(holding.pnlBasis)
       && holding.pnlValue !== null && holding.pnlUpdatedAt !== holding.amountUpdatedAt;
-    if (holding.amountUpdatedAt !== quote.asOfDate || cumulativePnlDateMismatch) {
-      const reason = cumulativePnlDateMismatch
-        ? `累计盈亏日期 ${holding.pnlUpdatedAt ?? '未提供'} 与金额日期 ${holding.amountUpdatedAt} 不一致；请先核对并更新盈亏日期。`
-        : `当前金额日期 ${holding.amountUpdatedAt} 与最新行情日期 ${quote.asOfDate} 不一致；请更新金额日期和金额后重试。`;
+    if (cumulativePnlDateMismatch) {
+      const reason = `累计盈亏日期 ${holding.pnlUpdatedAt ?? '未提供'} 与金额日期 ${holding.amountUpdatedAt} 不一致；请先核对并更新盈亏日期。`;
       const { error } = await admin.from('user_market_tracking').upsert({
         ...shared, status: 'awaiting-baseline', reason,
         baseline_amount: null, baseline_pnl_value: null, baseline_pnl_basis: holding.pnlBasis,

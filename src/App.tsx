@@ -953,7 +953,7 @@ export default function App() {
               <div className="holding-main"><h3>{holding.manualName && <span className="manual-badge">手工名称</span>}{holding.productName} <span className="type-badge">{holding.productType}</span>{holding.classificationUserOverride && <span className="manual-badge">分类手工确认</span>}</h3><p>{holding.platform}{holding.productCode && ` · ${holding.productCode}`} · {holding.marketScope}{holding.countryOrRegion ? ` · ${holding.countryOrRegion}` : ''}{holding.industry ? ` · ${holding.industry}` : ''} · 金额日期：{isEstimated ? `行情估算截至 ${tracking!.latest_price_date}` : holding.amountUpdatedAt} · 盈亏日期：{isEstimated && ['累计金额', '累计比例'].includes(holding.pnlBasis) ? tracking!.latest_price_date : holding.pnlUpdatedAt ?? '未提供'}</p>
                 {tracking && <p className="market-detail">
                   <span className={`track-badge ${tracking.status === 'active' ? 'badge-active' : tracking.status === 'unsupported' ? 'badge-none' : 'badge-warn'}`}>
-                    {tracking.status === 'active' ? '实测' : tracking.status === 'unsupported' ? '无行情' : tracking.status === 'awaiting-baseline' ? '待重设基准' : tracking.status}
+                    {tracking.status === 'active' ? '实测' : tracking.status === 'unsupported' ? '无行情' : tracking.status === 'awaiting-baseline' ? '待重设基准' : tracking.status === 'intraday' ? '盘中实时' : tracking.status}
                   </span>
                   {tracking.status === 'active' ? ` ${tracking.latest_price_date} · ${tracking.latest_source}` : ` ${tracking.reason ?? '待检查'}`}
                   {tracking.status === 'active' && tracking.latest_price_date && (() => {
