@@ -396,8 +396,9 @@ export default function App() {
   }, [marketEstimates]);
   const performanceHoldings = useMemo(() => state.holdings.map((holding) => {
     const tracking = trackingById[holding.holdingId];
-    const useEstimate = (tracking?.status === 'active' || tracking?.status === 'intraday') && tracking.estimated_amount !== null;
-    if (!useEstimate) return holding;
+    // 只有收盘后正式更新的（active）才用估算金额替换原始金额
+    // 盘中实时（intraday）不替换正式金额，只在持仓卡片上单独标记
+    if (tracking?.status !== 'active' || tracking.estimated_amount === null) return holding;
     const pnlValue = holding.pnlBasis === '累计比例'
       ? tracking.estimated_return_pct
       : holding.pnlBasis === '累计金额' ? tracking.estimated_pnl_value : holding.pnlValue;
