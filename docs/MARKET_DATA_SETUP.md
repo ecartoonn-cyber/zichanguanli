@@ -11,19 +11,15 @@
 
 ## 部署步骤
 
+> **当前实际部署方式**：Edge Function 直接在 Supabase Dashboard 手动粘贴代码部署（免费版无 CLI 环境），Cron 改用外部触发（GitHub Actions 或本地定时脚本），未使用 pg_cron。
+
 1. 先备份当前 JSON 持仓。
-   在 Supabase Dashboard 核对当前项目套餐、`pg_cron` / `pg_net` / Vault 扩展可用性和预计用量；部署前不升级套餐、不启用会新增付费的资源。Supabase 官方支持通过 Cron + `pg_net` 定时调用 Edge Function，并建议把调用凭据存进 Vault，套餐和函数运行时限制以当前项目的 Usage/Billing 页面为准。[Cron 文档](https://supabase.com/docs/guides/cron) · [函数定时调用](https://supabase.com/docs/guides/functions/schedule-functions) · [函数限制](https://supabase.com/docs/guides/functions/limits)
-2. 在 Supabase SQL Editor 执行 `supabase/migrations/202610180002_market_tracking.sql`。迁移保留现有 `user_portfolios` 记录，只允许登录用户读取自己的估算、任务历史；行情表只允许登录用户读，所有写入由 Edge Function 服务端执行。
-3. 用 Supabase CLI 部署 `market-data` Edge Function：
-
-   ```sh
-   supabase functions deploy market-data --project-ref dosomrwbcxvponmawdrh
-   ```
-
-4. 在 Supabase Edge Function Secrets 中设置 `MARKET_CRON_SECRET`，使用随机生成、至少 32 字符的值。该值不得写入仓库或前端变量。
-5. 在 Supabase Dashboard 启用 `pg_cron`、`pg_net` 和 Vault 扩展。将 `supabase/cron/market-data.sql` 中的项目 URL、公开 Publishable/anon key 和同一个随机 Cron secret 保存为 Vault secrets（名称必须分别为 `pios_project_url`、`pios_publishable_key`、`pios_market_cron_secret`），替换占位符后执行该 SQL。Cron 按工作日 15:30 UTC（北京时间 23:30）调用函数；Supabase Cron 会记录调度运行结果。[Supabase Cron 文档](https://supabase.com/docs/guides/cron)、[定时调用 Edge Function](https://supabase.com/docs/guides/functions/schedule-functions)
-6. EdgeOne 仍按原有 Git 关联构建前端。EdgeOne 不会部署 Supabase Function 或 SQL；前后端须分别发布。
-7. 登录并启用云同步后，在持仓卡片选择“开启每日估算”。首次基准要求金额日期与来源最新行情日期相同；累计盈亏日期也必须与金额日期一致。可在“交易日行情检查”点“立即检查”进行手动验证。
+2. 在 Supabase SQL Editor 执行 `supabase/migrations/202610180002_market_tracking.sql`。
+3. 在 Supabase Dashboard → Edge Functions → 新建 market-data 函数，粘贴 `supabase/functions/market-data/index.ts` 最新代码，点 Deploy。
+4. 在 Supabase Edge Function Secrets 中设置 `MARKET_CRON_SECRET`。
+5. 定时触发：免费版无 pg_cron，改用 GitHub Actions 或本地脚本工作日收盘后手动/自动调用。
+6. EdgeOne 按 Git 关联构建前端；Supabase Function 需单独手动部署。
+7. 登录并启用云同步后，在持仓卡片选择”开启每日估算”。
 
 ## 验收和恢复
 

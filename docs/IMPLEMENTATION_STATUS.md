@@ -49,6 +49,32 @@
 - 首次云同步显式选择本机或云端数据；后续写入用 revision 乐观锁发现多设备并发。
 - 迁移已在目标工作区 main 分支执行（apply_migration 202610180001_user_portfolios，2026-10-18）；Auth 登录已随新版本上线，页面已验证显示「未登录」+ 登录表单。端到端读写（真实账号登录后上传/恢复资料）尚未验收，未写入任何用户数据。
 
+## 2026-10-21 行情模块迭代与板块估值上线
+
+### 板块估值模块（已闭环）
+- `sector_valuation` 表迁移已执行，31 个申万一级行业估值分位数据在线
+- GitHub Actions 每日 23:30 自动快照（`sector-valuation.yml`），手动触发 #1 成功
+- 前端板块估值面板正常渲染，股债利差分位 80.3%，非银金融抄底信号 87 分/风险 2 分
+- 快照脚本：`scripts/sector_valuation.py`（数据源：乐咕乐股 + 申万指数）
+
+### 行情 Edge Function 迭代
+- **分类修正**：修正 12 条持仓 productType 错误（QDII/混合基金从"其他"或"A股股票"改为"场外基金"）
+- **双数据源 fallback**：A股(60/00/30开头)和ETF(51/15/56/58开头)走腾讯接口，场外基金走东财接口，主源失败自动切换
+- **盘中交易时段保护**：工作日 9:30-15:00 点"立即检查"只返回实时预估，标记为 `intraday` 状态，**不更新**持久化收益数据；收盘后才正式更新 latest_price 和累计收益
+- **QDII T+2 宽限**：海外/QDII 基金净值允许滞后 2 天，不标记 stale
+- **基准价固定**：基准价固定为录入时（10-16）的价格，每天只更新最新价，不重设基准
+
+### 手动数据修复脚本（supabase/manual/）
+- `rebuild_baseline_v2.mjs`：批量以 10-16 为基准重算所有持仓历史净值
+- `fix_product_types.sql`：修正 tracking 表 productType
+- `fix_portfolio_product_types.sql`：修正 user_portfolios 里 12 条 productType
+- `rollback_intraday_20261021.sql`：回退盘中误更新的 5 只 A股/ETF 价格到 10-20 收盘价
+
+### 部署状态
+- Edge Function：market-data 已在 Supabase Dashboard 手动部署最新版（含盘中逻辑）
+- 前端：commit 156bbdb + 101af96 已 push，EdgeOne 自动构建部署
+- 待验证：盘中交易时段点检查是否正确显示"盘中实时"标签
+
 ## 线上部署（2026-10-18）
 
 - 平台：火山引擎 AI 原生 BaaS 平台（Supabase 版）· IGA Pages 静态托管。
