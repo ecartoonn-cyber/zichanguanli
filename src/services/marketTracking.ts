@@ -6,7 +6,7 @@ export type MarketTrackingRow = {
   product_code: string;
   product_type: string;
   enabled: boolean;
-  status: 'awaiting-baseline' | 'active' | 'unsupported' | 'stale' | 'error' | 'disabled';
+  status: 'awaiting-baseline' | 'active' | 'unsupported' | 'stale' | 'error' | 'disabled' | 'intraday';
   reason: string | null;
   baseline_amount: number | null;
   baseline_pnl_basis: PnlBasis;
